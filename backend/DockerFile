@@ -2,12 +2,18 @@ FROM node:20-bookworm-slim
 
 WORKDIR /app
 
+# Install production dependencies from the backend package manifest.
 COPY package*.json ./
 
-RUN npm ci
+RUN npm ci --omit=dev
 
+# Copy the complete backend source.
 COPY . .
+
+# Render/Railway provides PORT at runtime.
+ENV NODE_ENV=production
 
 EXPOSE 3000
 
+# Run the existing database migration and then start the server.
 CMD ["sh", "-c", "npm run migrate && npm start"]
