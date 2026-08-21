@@ -1,0 +1,8 @@
+<resources>
+    <!-- Brand colors matching the Compose theme -->
+    <color name="brand_blue">#315BEA</color>
+    <color name="navy_dark">#172033</color>
+    <color name="green_success">#24B47E</color>
+    <color name="orange_warning">#EF7658</color>
+    <color name="light_gray">#F6F6F6</color>
+</resources>

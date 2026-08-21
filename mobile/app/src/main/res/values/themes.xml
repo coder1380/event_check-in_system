@@ -1,0 +1,7 @@
+<resources>
+    <!-- Base theme — Compose uses this as the window theme only -->
+    <style name="Theme.Gatherin" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">@color/light_gray</item>
+        <item name="android:windowBackground">@color/light_gray</item>
+    </style>
+</resources>

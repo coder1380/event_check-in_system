@@ -1,0 +1,28 @@
+Concurrency proof run started at 2026-08-20T16:05:20.995Z
+Servers: http://localhost:3001, http://localhost:3002
+Capacity: 10, concurrent requests: 120
+
+--- Setup ---
+Created event 94bef61c-b61d-461a-b181-5f6440bdb431 with capacity 10
+Registered 120 attendees
+
+--- Test 1: 120 concurrent registrations, capacity = 10 ---
+  Successes (201):        10 (expected: 10)
+  Capacity-full (409):    110 (expected: 110)
+  Other statuses:         0
+  Network rejections:     0
+  PASS ✓
+
+--- Test 2: 120 concurrent check-ins with the same token ---
+Minted QR token for registration d326f6b2-f0a2-4a33-85b9-67bcdc282141
+  Successes (201):        1 (expected: 1)
+  Already checked-in (409): 119 (expected: 119)
+  Other statuses:         0
+  Network rejections:     0
+  PASS ✓
+
+--- Summary ---
+Registration: PASS (10/10 successes)
+Check-in:     PASS (1/1 successes)
+Overall:      PASS ✓
+Run finished at 2026-08-20T16:05:48.681Z

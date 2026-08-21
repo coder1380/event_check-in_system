@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: event-checkin-backend
+    runtime: node
+    rootDir: backend
+    buildCommand: npm install
+    # Run idempotent migrations before serving so a fresh Render Postgres
+    # database has its schema ready before the first request.
+    startCommand: npm run migrate && npm start
+    healthCheckPath: /api/v1/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: CORS_ORIGIN
+        value: https://<your-vercel-frontend>.vercel.app
+    # The following sensitive env vars must be configured in the Render
+    # dashboard (never committed to source control):
+    #   JWT_ACCESS_SECRET, JWT_REFRESH_SECRET, AI_API_KEY, SENTRY_DSN
+    # Render auto-injects DATABASE_URL for the PostgreSQL add-on below.
+    databases:
+      - name: event-checkin-db
+        postgresVersion: "16"
