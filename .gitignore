@@ -6,6 +6,7 @@ docs.zip
 FEATURES.md
 TEST_PLAN.md
 tasks.md
+.env.example
 
 # Exclude docs directory and archive
 docs/
