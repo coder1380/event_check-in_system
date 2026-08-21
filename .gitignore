@@ -1,0 +1,15 @@
+node_modules/
+.env
+.nvmrc
+.continue
+docs.zip
+FEATURES.md
+TEST_PLAN.md
+tasks.md
+
+# Exclude docs directory and archive
+docs/
+docs.zip
+
+# Temporary files
+*.swp

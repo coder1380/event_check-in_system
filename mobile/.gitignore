@@ -1,0 +1,25 @@
+# Built assets and Gradle files
+.gradle
+build/
+/build
+/*/build
+app/build/
+.kotlin
+
+# Local configuration files
+local.properties
+
+# Log files
+*.log
+
+# Android Studio and IntelliJ IDEA files
+.idea/
+*.iml
+.navigation/
+
+# Output APKs
+*.apk
+*.aar
+
+# System specific files
+.DS_Store
