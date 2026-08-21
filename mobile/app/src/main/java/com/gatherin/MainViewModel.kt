@@ -233,7 +233,10 @@ class MainViewModel : ViewModel() {
             val now = System.currentTimeMillis()
             val trimmedToken = token.trim()
 
+            android.util.Log.d("MainViewModel", "processCheckin called for token: $trimmedToken")
+
             if (trimmedToken == lastToken && now - lastScanTime < 2000) {
+                android.util.Log.d("MainViewModel", "processCheckin debounced")
                 return@launch
             }
 
@@ -241,20 +244,33 @@ class MainViewModel : ViewModel() {
             lastScanTime = now
 
             try {
+                android.util.Log.d("MainViewModel", "Sending check-in request to API...")
                 val res = api.processCheckin(CheckinRequest(trimmedToken, stationId))
                 val body = res.body()
+                android.util.Log.d("MainViewModel", "API Response: ${res.code()} - ${res.message()}")
+                
                 _scanResult.value = when {
-                    res.isSuccessful -> ScanResult.Success(
-                        "✅ Checked in: ${body?.checkin?.attendeeName ?: "Guest"}"
-                    )
-                    res.code() == 409 -> ScanResult.Duplicate(
-                        "⛔ ${body?.error?.message ?: "Already checked in"}"
-                    )
-                    else -> ScanResult.Error(
-                        "❌ ${body?.error?.message ?: "Scan failed"}"
-                    )
+                    res.isSuccessful -> {
+                        android.util.Log.d("MainViewModel", "Check-in successful")
+                        ScanResult.Success(
+                            "✅ Checked in: ${body?.checkin?.attendeeName ?: "Guest"}"
+                        )
+                    }
+                    res.code() == 409 -> {
+                        android.util.Log.d("MainViewModel", "Check-in duplicate")
+                        ScanResult.Duplicate(
+                            "⛔ ${body?.error?.message ?: "Already checked in"}"
+                        )
+                    }
+                    else -> {
+                        android.util.Log.d("MainViewModel", "Check-in error: ${res.code()}")
+                        ScanResult.Error(
+                            "❌ ${body?.error?.message ?: "Scan failed"}"
+                        )
+                    }
                 }
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                android.util.Log.e("MainViewModel", "Check-in exception", e)
                 _scanResult.value = ScanResult.Error("❌ Network error during check-in")
             }
         }

@@ -2,6 +2,7 @@ package com.gatherin.ui.screens
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
@@ -88,6 +89,7 @@ fun ScannerScreen(vm: MainViewModel) {
                 if (hasCameraPermission) {
                     CameraPreview(
                         onQrCodeDetected = { token ->
+                            Log.d("ScannerScreen", "QR detected: $token")
                             vm.processCheckin(token, stationId)
                         }
                     )
@@ -271,11 +273,17 @@ fun CameraPreview(
                     val image = InputImage.fromMediaImage(mediaImage, imageProxy.imageInfo.rotationDegrees)
                     scanner.process(image)
                         .addOnSuccessListener { barcodes ->
+                            if (barcodes.isNotEmpty()) {
+                                Log.d("CameraPreview", "ML Kit found ${barcodes.size} barcodes")
+                            }
                             for (barcode in barcodes) {
                                 barcode.rawValue?.let { token ->
                                     onQrCodeDetected(token)
                                 }
                             }
+                        }
+                        .addOnFailureListener { e ->
+                            Log.e("CameraPreview", "ML Kit process failure", e)
                         }
                         .addOnCompleteListener {
                             imageProxy.close()
