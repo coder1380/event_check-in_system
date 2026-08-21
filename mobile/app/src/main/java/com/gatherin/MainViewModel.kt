@@ -233,10 +233,7 @@ class MainViewModel : ViewModel() {
             val now = System.currentTimeMillis()
             val trimmedToken = token.trim()
 
-            android.util.Log.d("MainViewModel", "processCheckin called for token: $trimmedToken")
-
             if (trimmedToken == lastToken && now - lastScanTime < 2000) {
-                android.util.Log.d("MainViewModel", "processCheckin debounced")
                 return@launch
             }
 
@@ -244,33 +241,39 @@ class MainViewModel : ViewModel() {
             lastScanTime = now
 
             try {
-                android.util.Log.d("MainViewModel", "Sending check-in request to API...")
                 val res = api.processCheckin(CheckinRequest(trimmedToken, stationId))
                 val body = res.body()
-                android.util.Log.d("MainViewModel", "API Response: ${res.code()} - ${res.message()}")
-                
+
                 _scanResult.value = when {
                     res.isSuccessful -> {
-                        android.util.Log.d("MainViewModel", "Check-in successful")
                         ScanResult.Success(
                             "✅ Checked in: ${body?.checkin?.attendeeName ?: "Guest"}"
                         )
                     }
                     res.code() == 409 -> {
-                        android.util.Log.d("MainViewModel", "Check-in duplicate")
+                        val errorJson = res.errorBody()?.string()
+                        val apiError = try {
+                            com.google.gson.Gson().fromJson(errorJson, ApiError::class.java)
+                        } catch (_: Exception) {
+                            null
+                        }
                         ScanResult.Duplicate(
-                            "⛔ ${body?.error?.message ?: "Already checked in"}"
+                            "⚠ ${apiError?.message ?: "Already checked in"}"
                         )
                     }
                     else -> {
-                        android.util.Log.d("MainViewModel", "Check-in error: ${res.code()}")
+                        val errorJson = res.errorBody()?.string()
+                        val apiError = try {
+                            com.google.gson.Gson().fromJson(errorJson, ApiError::class.java)
+                        } catch (_: Exception) {
+                            null
+                        }
                         ScanResult.Error(
-                            "❌ ${body?.error?.message ?: "Scan failed"}"
+                            "❌ ${apiError?.message ?: "Scan failed"}"
                         )
                     }
                 }
             } catch (e: Exception) {
-                android.util.Log.e("MainViewModel", "Check-in exception", e)
                 _scanResult.value = ScanResult.Error("❌ Network error during check-in")
             }
         }
