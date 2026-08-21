@@ -13,7 +13,9 @@ import retrofit2.converter.gson.GsonConverterFactory
  */
 object RetrofitClient {
 
-    private const val BASE_URL = "http://10.0.2.2:3000/api/v1/"
+                    // ngrok URL for testing the backend from a physical phone.
+    // Local dev via Android emulator can use http://10.0.2.2:3000/api/v1/ instead.
+    private const val BASE_URL = "https://wool-refuse-anthem.ngrok-free.dev/api/v1/"
 
     @Volatile private var token: String? = null
 

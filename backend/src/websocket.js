@@ -5,8 +5,12 @@ const pool = require('./db/pool');
 let io;
 
 function initSocketIO(server) {
+    const corsOrigins = process.env.CORS_ORIGIN
+    ? process.env.CORS_ORIGIN.split(',').map((o) => o.trim()).filter(Boolean)
+    : true;
+
   io = new Server(server, {
-    cors: { origin: process.env.CORS_ORIGIN, methods: ['GET', 'POST'], credentials: true },
+    cors: { origin: corsOrigins, methods: ['GET', 'POST'], credentials: true },
   });
   io.use((socket, next) => {
     const token = socket.handshake.auth?.token;

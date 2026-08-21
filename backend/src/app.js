@@ -7,8 +7,12 @@ const logger = require('./logger');
 const app = express();
 
 app.use(helmet());
+const corsOrigins = process.env.CORS_ORIGIN
+  ? process.env.CORS_ORIGIN.split(',').map((o) => o.trim()).filter(Boolean)
+  : true;
+
 app.use(cors({
-  origin: process.env.CORS_ORIGIN,
+  origin: corsOrigins,
   credentials: true,
   methods: ['GET', 'POST', 'PATCH', 'DELETE'],
 }));
