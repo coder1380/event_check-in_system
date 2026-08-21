@@ -3,7 +3,8 @@ FROM node:20-bookworm-slim
 WORKDIR /app
 
 # Install production dependencies from the backend package manifest.
-COPY package*.json ./
+COPY backend/package*.json ./
+COPY backend/ ./
 
 RUN npm ci --omit=dev
 
