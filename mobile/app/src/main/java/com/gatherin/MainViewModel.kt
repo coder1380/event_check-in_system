@@ -19,6 +19,12 @@ class MainViewModel : ViewModel() {
 
     private val api get() = RetrofitClient.api
 
+    // Live dashboard socket (web uses Socket.IO; mobile joins the same rooms).
+    private var eventSocket: EventSocketManager? = null
+
+    private val _socketConnected = MutableStateFlow(true)
+    val socketConnected: StateFlow<Boolean> = _socketConnected.asStateFlow()
+
     // ── Auth state ────────────────────────────────────────────────────────────
     private val _user  = MutableStateFlow<User?>(null)
     val user: StateFlow<User?> = _user.asStateFlow()
@@ -72,6 +78,17 @@ class MainViewModel : ViewModel() {
     private val _snackMessage = MutableStateFlow<String?>(null)
     val snackMessage: StateFlow<String?> = _snackMessage.asStateFlow()
 
+    init {
+        // ── Restore persisted session (mirrors web localStorage behaviour) ────
+        val savedUser = SessionManager.savedUser()
+        val savedToken = SessionManager.accessToken
+        if (savedUser != null && savedToken != null) {
+            _user.value = savedUser
+            _token.value = savedToken
+            loadInitialData(savedUser)
+        }
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // Auth
     // ─────────────────────────────────────────────────────────────────────────
@@ -83,7 +100,7 @@ class MainViewModel : ViewModel() {
             val res = api.login(LoginRequest(email, password))
             val body = res.body()
             if (res.isSuccessful && body?.user != null && body.accessToken != null) {
-                RetrofitClient.setToken(body.accessToken)
+                SessionManager.saveSession(body.user, body.accessToken, body.refreshToken)
                 _token.value = body.accessToken
                 _user.value  = body.user
                 loadInitialData(body.user)
@@ -105,7 +122,7 @@ class MainViewModel : ViewModel() {
                 val res = api.register(RegisterRequest(email, password, fullName, role))
                 val body = res.body()
                 if (res.isSuccessful && body?.user != null && body.accessToken != null) {
-                    RetrofitClient.setToken(body.accessToken)
+                    SessionManager.saveSession(body.user, body.accessToken, body.refreshToken)
                     _token.value = body.accessToken
                     _user.value  = body.user
                     loadInitialData(body.user)
@@ -120,7 +137,14 @@ class MainViewModel : ViewModel() {
         }
 
     fun signOut() {
-        RetrofitClient.setToken(null)
+        // Revoke the refresh token server-side (best effort), then clear locally.
+        val refresh = SessionManager.refreshToken
+        viewModelScope.launch {
+            try { if (refresh != null) api.logout(RefreshRequest(refresh)) } catch (_: Exception) { }
+        }
+        eventSocket?.disconnect()
+        eventSocket = null
+        SessionManager.clear()
         _user.value          = null
         _token.value         = null
         _events.value        = emptyList()
@@ -195,16 +219,131 @@ class MainViewModel : ViewModel() {
     fun selectEventForDashboard(eventId: String) {
         _selectedEventId.value = eventId
         fetchDashboard(eventId)
+        connectToEventSocket(eventId)
+    }
+
+    /**
+     * Live updates via Socket.IO — same feed as the web dashboard:
+     * `checkin:new` and `event:stats_update` broadcasts for this event room.
+     */
+    private fun connectToEventSocket(eventId: String) {
+        eventSocket?.disconnect()
+        eventSocket = EventSocketManager(
+            eventId = eventId,
+            onCheckin = { registrationId, checkedInAt, checkedInCount, spotsRemaining ->
+                val current = _dashboard.value ?: return@EventSocketManager
+                val newCheckedInCount = checkedInCount ?: (current.checkedInCount + 1)
+                _dashboard.value = current.copy(
+                    checkedInCount = newCheckedInCount,
+                    spotsRemaining = spotsRemaining ?: (current.capacity - newCheckedInCount),
+                    attendees = current.attendees.map {
+                        if (it.registrationId == registrationId) it.copy(checkedInAt = checkedInAt) else it
+                    }
+                )
+            },
+            onStats = { registeredCount, spotsRemaining ->
+                val current = _dashboard.value ?: return@EventSocketManager
+                _dashboard.value = current.copy(
+                    registeredCount = registeredCount ?: current.registeredCount,
+                    spotsRemaining = spotsRemaining ?: current.spotsRemaining
+                )
+            },
+            onConnectionChange = { connected -> _socketConnected.value = connected }
+        ).also { it.connect() }
     }
 
     fun fetchDashboard(eventId: String) = viewModelScope.launch {
-        _loading.value = true
         try {
             val res = api.getDashboard(eventId)
             if (res.isSuccessful) _dashboard.value = res.body()
         } catch (_: Exception) { }
-        finally { _loading.value = false }
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Event create / edit (organizer)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    fun createEvent(name: String, capacity: Int, isoDate: String, onDone: () -> Unit) =
+        viewModelScope.launch {
+            _loading.value = true
+            try {
+                val res = api.createEvent(EventRequest(name.trim(), isoDate, capacity))
+                if (res.isSuccessful) {
+                    _snackMessage.value = "🎉 Event created!"
+                    fetchEvents()
+                    onDone()
+                } else {
+                    _snackMessage.value = parseError(res) ?: "Could not create event."
+                }
+            } catch (_: Exception) {
+                _snackMessage.value = "Network error. Please try again."
+            } finally { _loading.value = false }
+        }
+
+    fun updateEvent(eventId: String, name: String, capacity: Int, isoDate: String, onDone: () -> Unit) =
+        viewModelScope.launch {
+            _loading.value = true
+            try {
+                val res = api.updateEvent(eventId, EventRequest(name.trim(), isoDate, capacity))
+                if (res.isSuccessful) {
+                    _snackMessage.value = "✏️ Event updated!"
+                    fetchEvents()
+                    if (_selectedEventId.value == eventId) fetchDashboard(eventId)
+                    onDone()
+                } else {
+                    _snackMessage.value = parseError(res) ?: "Could not update event."
+                }
+            } catch (_: Exception) {
+                _snackMessage.value = "Network error. Please try again."
+            } finally { _loading.value = false }
+        }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Registration cancellation (attendee)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    fun cancelRegistration(registrationId: String) = viewModelScope.launch {
+        try {
+            val res = api.cancelRegistration(registrationId)
+            if (res.isSuccessful) {
+                _snackMessage.value = "Registration cancelled."
+                fetchRegistrations()
+                fetchEvents()
+            } else {
+                _snackMessage.value = parseError(res) ?: "Could not cancel registration."
+            }
+        } catch (_: Exception) {
+            _snackMessage.value = "Network error. Please try again."
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // CSV attendee export (organizer)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private val _csvContent = MutableStateFlow<String?>(null)
+    val csvContent: StateFlow<String?> = _csvContent.asStateFlow()
+
+    fun exportAttendeesCsv(eventId: String) = viewModelScope.launch {
+        try {
+            val res = api.exportAttendeesCsv(eventId)
+            if (res.isSuccessful) {
+                _csvContent.value = res.body()?.string()
+            } else {
+                _snackMessage.value = "Export failed."
+            }
+        } catch (_: Exception) {
+            _snackMessage.value = "Network error during export."
+        }
+    }
+
+    fun clearCsv() { _csvContent.value = null }
+
+    private fun parseError(res: retrofit2.Response<*>): String? = try {
+        res.errorBody()?.string()?.let {
+            com.google.gson.Gson().fromJson(it, ApiError::class.java)?.message
+        }
+    } catch (_: Exception) { null }
 
     // ─────────────────────────────────────────────────────────────────────────
     // AI Query

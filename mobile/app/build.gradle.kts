@@ -72,6 +72,9 @@ dependencies {
     // Gson
     implementation(libs.gson)
 
+    // ── Socket.IO (live dashboard updates) ────────────────────────────────────
+    implementation(libs.socketio.client)
+
     // ── CameraX ──────────────────────────────────────────────────────────────
     implementation(libs.androidx.camera.core)
     implementation(libs.androidx.camera.camera2)

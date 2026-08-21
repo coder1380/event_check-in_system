@@ -62,11 +62,29 @@ data class CheckinRequest(
 
 data class AiQueryRequest(val question: String)
 
+// ── Event create / update (organizer) ────────────────────────────────────────
+data class EventRequest(
+    val name: String,
+    @SerializedName("event_date") val eventDate: String, // ISO-8601 e.g. 2026-09-01T18:00:00.000Z
+    val capacity: Int
+)
+
+data class EventResponse(val event: EventItem?)
+
+// ── Refresh token rotation / logout ──────────────────────────────────────────
+data class RefreshRequest(@SerializedName("refresh_token") val refreshToken: String)
+
+data class RefreshResponse(
+    @SerializedName("access_token") val accessToken: String?,
+    @SerializedName("refresh_token") val refreshToken: String?
+)
+
 // ─── Response Wrappers ────────────────────────────────────────────────────────
 
 data class AuthResponse(
     val user: User?,
     @SerializedName("access_token") val accessToken: String?,
+    @SerializedName("refresh_token") val refreshToken: String?,
     val error: ApiError?
 )
 

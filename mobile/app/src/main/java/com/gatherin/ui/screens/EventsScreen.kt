@@ -5,6 +5,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -20,13 +22,31 @@ import java.text.SimpleDateFormat
 import java.util.*
 
 @Composable
-fun EventsScreen(vm: MainViewModel) {
+fun EventsScreen(
+    vm: MainViewModel,
+    onCreateEvent: () -> Unit = {},
+    onEditEvent: (String) -> Unit = {}
+) {
     val events  by vm.events.collectAsStateWithLifecycle()
     val user    by vm.user.collectAsStateWithLifecycle()
     val loading by vm.loading.collectAsStateWithLifecycle()
     val isOrganizer = user?.role == "organizer"
 
     Scaffold(
+        floatingActionButton = {
+            if (isOrganizer) {
+                ExtendedFloatingActionButton(
+                    onClick = onCreateEvent,
+                    shape   = RoundedCornerShape(14.dp),
+                    containerColor = BrandBlue,
+                    contentColor   = Color.White
+                ) {
+                    Icon(Icons.Default.Add, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("New Event")
+                }
+            }
+        },
         topBar = {
             AppTopBar(
                 title    = "Upcoming Events",
@@ -65,7 +85,8 @@ fun EventsScreen(vm: MainViewModel) {
                     event       = event,
                     isOrganizer = isOrganizer,
                     onRegister  = { vm.registerForEvent(event.id) },
-                    onDashboard = { vm.selectEventForDashboard(event.id) }
+                    onDashboard = { vm.selectEventForDashboard(event.id) },
+                    onEdit      = { onEditEvent(event.id) }
                 )
             }
         }
@@ -77,7 +98,8 @@ private fun EventCard(
     event: EventItem,
     isOrganizer: Boolean,
     onRegister: () -> Unit,
-    onDashboard: () -> Unit
+    onDashboard: () -> Unit,
+    onEdit: () -> Unit
 ) {
     val dateFormat = remember { SimpleDateFormat("MMM d", Locale.getDefault()) }
     val timeFormat = remember { SimpleDateFormat("h:mm a", Locale.getDefault()) }
@@ -125,12 +147,27 @@ private fun EventCard(
                 modifier = Modifier.padding(top = 2.dp, bottom = 12.dp))
 
             if (isOrganizer) {
-                OutlinedButton(
-                    onClick = onDashboard,
-                    shape   = RoundedCornerShape(10.dp),
-                    modifier = Modifier.fillMaxWidth()
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Text("View Live Dashboard →", color = BrandBlue)
+                    OutlinedButton(
+                        onClick  = onDashboard,
+                        shape    = RoundedCornerShape(10.dp),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Live Dashboard →", color = BrandBlue)
+                    }
+                    OutlinedButton(
+                        onClick  = onEdit,
+                        shape    = RoundedCornerShape(10.dp),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Default.Edit, contentDescription = null, tint = BrandBlue,
+                            modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Edit", color = BrandBlue)
+                    }
                 }
             } else {
                 Button(

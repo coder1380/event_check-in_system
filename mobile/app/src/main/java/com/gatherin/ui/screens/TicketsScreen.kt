@@ -64,7 +64,8 @@ fun TicketsScreen(vm: MainViewModel) {
             items(registrations) { reg ->
                 TicketCard(
                     registration = reg,
-                    onShowQr     = { vm.fetchQrToken(reg.id) }
+                    onShowQr     = { vm.fetchQrToken(reg.id) },
+                    onCancel     = { vm.cancelRegistration(reg.id) }
                 )
             }
         }
@@ -72,7 +73,8 @@ fun TicketsScreen(vm: MainViewModel) {
 }
 
 @Composable
-private fun TicketCard(registration: Registration, onShowQr: () -> Unit) {
+private fun TicketCard(registration: Registration, onShowQr: () -> Unit, onCancel: () -> Unit) {
+    var showCancelDialog by remember { mutableStateOf(false) }
     val dateFormat = remember { SimpleDateFormat("MMM d, yyyy", Locale.getDefault()) }
     val parsed     = remember(registration.eventDate) {
         runCatching {
@@ -114,7 +116,33 @@ private fun TicketCard(registration: Registration, onShowQr: () -> Unit) {
                 ) {
                     Text("📱 Show QR Pass", color = MaterialTheme.colorScheme.onSurface)
                 }
+                Spacer(Modifier.height(8.dp))
+                TextButton(
+                    onClick  = { showCancelDialog = true },
+                    shape    = RoundedCornerShape(10.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Cancel registration", color = OrangeWarning)
+                }
             }
         }
+    }
+
+    // ── Cancel confirmation dialog ────────────────────────────────────────────
+    if (showCancelDialog) {
+        AlertDialog(
+            onDismissRequest = { showCancelDialog = false },
+            title   = { Text("Cancel registration?") },
+            text    = { Text("Your spot at \"${registration.eventName}\" will be freed up for others. This cannot be undone.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showCancelDialog = false
+                    onCancel()
+                }) { Text("Yes, cancel it", color = OrangeWarning) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCancelDialog = false }) { Text("Keep my ticket") }
+            }
+        )
     }
 }

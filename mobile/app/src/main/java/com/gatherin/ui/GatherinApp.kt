@@ -84,10 +84,24 @@ fun GatherinApp(vm: MainViewModel = viewModel()) {
             startDestination = startRoute,
             modifier         = Modifier.padding(innerPadding)
         ) {
-            composable(Screen.Events.route)    { EventsScreen(vm = vm) }
+            composable(Screen.Events.route)    { EventsScreen(
+                vm = vm,
+                onCreateEvent = { navController.navigate("event_form/new") },
+                onEditEvent   = { navController.navigate("event_form/$it") }
+            ) }
             composable(Screen.Tickets.route)   { TicketsScreen(vm = vm) }
             composable(Screen.Dashboard.route) { DashboardScreen(vm = vm) }
             composable(Screen.Scanner.route)   { ScannerScreen(vm = vm) }
+            composable("event_form/{eventId}") { backStackEntry ->
+                val eventId = backStackEntry.arguments?.getString("eventId")
+                val editEvent = if (eventId == null || eventId == "new") null
+                                else vm.events.value.find { it.id == eventId }
+                EventFormScreen(
+                    vm = vm,
+                    editEvent = editEvent,
+                    onDone = { navController.popBackStack() }
+                )
+            }
         }
     }
 }
