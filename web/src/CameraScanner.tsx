@@ -1,10 +1,9 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
-import type { FormEvent } from 'react'
 import { Html5Qrcode } from 'html5-qrcode'
 import { openDB } from 'idb'
 import type { DBSchema, IDBPDatabase } from 'idb'
 import toast from 'react-hot-toast'
-import { ChevronRight, RefreshCw, Wifi, WifiOff } from 'lucide-react'
+import { ChevronRight, RefreshCw, Wifi, WifiOff, Volume2, VolumeX, CheckCircle, AlertOctagon, AlertTriangle, XCircle, Clock, Trash2 } from 'lucide-react'
 
 interface ScannerDB extends DBSchema {
   pending_scans: {
@@ -118,40 +117,184 @@ function formatTime(dateStr: string) {
   }
 }
 
+function playAudioFeedback(type: ScanResultType, soundEnabled = true) {
+  if (!soundEnabled) return
+  try {
+    const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
+    if (!AudioCtx) return
+    const ctx = new AudioCtx()
+    const now = ctx.currentTime
+
+    if (type === 'success') {
+      const osc = ctx.createOscillator()
+      const gain = ctx.createGain()
+      osc.type = 'sine'
+      osc.frequency.setValueAtTime(523.25, now) // C5
+      osc.frequency.setValueAtTime(783.99, now + 0.1) // G5
+      gain.gain.setValueAtTime(0.35, now)
+      gain.gain.exponentialRampToValueAtTime(0.01, now + 0.3)
+      osc.connect(gain)
+      gain.connect(ctx.destination)
+      osc.start(now)
+      osc.stop(now + 0.3)
+    } else if (type === 'duplicate') {
+      const osc = ctx.createOscillator()
+      const gain = ctx.createGain()
+      osc.type = 'triangle'
+      osc.frequency.setValueAtTime(400, now)
+      gain.gain.setValueAtTime(0.35, now)
+      gain.gain.setValueAtTime(0.01, now + 0.1)
+      gain.gain.setValueAtTime(0.35, now + 0.15)
+      gain.gain.exponentialRampToValueAtTime(0.01, now + 0.3)
+      osc.connect(gain)
+      gain.connect(ctx.destination)
+      osc.start(now)
+      osc.stop(now + 0.3)
+    } else if (type === 'expired') {
+      const osc = ctx.createOscillator()
+      const gain = ctx.createGain()
+      osc.type = 'sine'
+      osc.frequency.setValueAtTime(600, now)
+      osc.frequency.exponentialRampToValueAtTime(300, now + 0.25)
+      gain.gain.setValueAtTime(0.35, now)
+      gain.gain.exponentialRampToValueAtTime(0.01, now + 0.25)
+      osc.connect(gain)
+      gain.connect(ctx.destination)
+      osc.start(now)
+      osc.stop(now + 0.25)
+    } else if (type === 'invalid') {
+      const osc = ctx.createOscillator()
+      const gain = ctx.createGain()
+      osc.type = 'sawtooth'
+      osc.frequency.setValueAtTime(160, now)
+      gain.gain.setValueAtTime(0.35, now)
+      gain.gain.exponentialRampToValueAtTime(0.01, now + 0.35)
+      osc.connect(gain)
+      gain.connect(ctx.destination)
+      osc.start(now)
+      osc.stop(now + 0.35)
+    } else if (type === 'queued') {
+      const osc = ctx.createOscillator()
+      const gain = ctx.createGain()
+      osc.type = 'sine'
+      osc.frequency.setValueAtTime(440, now)
+      gain.gain.setValueAtTime(0.25, now)
+      gain.gain.exponentialRampToValueAtTime(0.01, now + 0.2)
+      osc.connect(gain)
+      gain.connect(ctx.destination)
+      osc.start(now)
+      osc.stop(now + 0.2)
+    }
+  } catch {
+    // Ignore audio context autoplay policy errors
+  }
+}
+
+function triggerHapticFeedback(type: ScanResultType) {
+  if (typeof window !== 'undefined' && 'vibrate' in navigator) {
+    try {
+      if (type === 'success') {
+        navigator.vibrate(100)
+      } else if (type === 'queued') {
+        navigator.vibrate(60)
+      } else {
+        navigator.vibrate([120, 60, 120])
+      }
+    } catch {
+      // Ignore vibration error
+    }
+  }
+}
+
 function ScanResultOverlay({ result, onDismiss }: { result: ScanResult; onDismiss: () => void }) {
   useEffect(() => {
-    const timer = setTimeout(onDismiss, 3000)
-    return () => clearTimeout(timer)
+    // Hook browser back button (popstate) so pressing Nav Back closes popup instead of leaving page
+    window.history.pushState({ scanResultModal: true }, '')
+
+    const handlePopState = () => {
+      onDismiss()
+    }
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onDismiss()
+      }
+    }
+
+    window.addEventListener('popstate', handlePopState)
+    window.addEventListener('keydown', handleKeyDown)
+
+    return () => {
+      window.removeEventListener('popstate', handlePopState)
+      window.removeEventListener('keydown', handleKeyDown)
+    }
   }, [onDismiss])
 
-  let bg = 'bg-green-600'
+  let bg = 'bg-emerald-600 border-emerald-400'
   let icon = '✅'
-  let text = `Checked in — ${result.name || 'Guest'}`
+  let badge = 'SUCCESS — ENTRY GRANTED'
+  let title = `Checked in — ${result.name || 'Guest'}`
+  let detail = 'Attendee check-in accepted by server.'
 
   if (result.type === 'duplicate') {
-    bg = 'bg-amber-600'
+    bg = 'bg-amber-600 border-amber-400'
     icon = '⛔'
+    badge = 'ALREADY CHECKED IN'
     const timeText = result.checked_in_at ? formatTime(result.checked_in_at) : ''
     const stationText = result.station_id ? ` (${result.station_id})` : ''
-    text = `Already checked in at ${timeText || 'earlier time'}${stationText}`
+    title = 'Ticket Already Scanned'
+    detail = `Checked in ${timeText ? `at ${timeText}` : 'earlier'}${stationText}`
   } else if (result.type === 'expired') {
-    bg = 'bg-yellow-500'
+    bg = 'bg-amber-600 border-amber-400'
     icon = '⚠️'
-    text = 'Expired code — ask attendee to refresh their QR'
+    badge = 'EXPIRED QR PASS'
+    title = 'Pass Expired'
+    detail = 'Ask attendee to refresh their QR pass on their phone.'
   } else if (result.type === 'invalid') {
-    bg = 'bg-red-600'
-    icon = '⛔'
-    text = result.message || 'Invalid QR code'
+    bg = 'bg-rose-600 border-rose-400'
+    icon = '❌'
+    badge = 'INVALID SCAN'
+    title = 'Scan Rejected'
+    detail = result.message || 'Invalid QR code'
   } else if (result.type === 'queued') {
-    bg = 'bg-blue-600'
+    bg = 'bg-blue-600 border-blue-400'
     icon = '🟡'
-    text = `Queued offline (${result.pendingCount || 1} pending sync)`
+    badge = 'QUEUED OFFLINE'
+    title = 'Saved Locally'
+    detail = `Scan queued offline (${result.pendingCount || 1} pending sync)`
   }
 
   return (
-    <div className={`absolute inset-0 ${bg} flex flex-col items-center justify-center text-white text-xl md:text-2xl font-bold z-50 rounded-[2rem] p-6 text-center shadow-2xl transition-all`}>
-      <span className="text-6xl mb-4 animate-bounce">{icon}</span>
-      <span className="max-w-md">{text}</span>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-md animate-in fade-in duration-200">
+      <div className={`relative w-full max-w-md rounded-[2.5rem] ${bg} border-4 p-8 text-white shadow-2xl flex flex-col items-center text-center space-y-6`}>
+        <div className="w-full flex justify-end">
+          <button
+            onClick={onDismiss}
+            className="rounded-full bg-black/20 hover:bg-black/40 text-white p-2 transition-colors"
+            title="Close popup (Esc / Nav Back)"
+          >
+            ✕
+          </button>
+        </div>
+
+        <div className="flex flex-col items-center">
+          <span className="text-7xl mb-4 animate-bounce">{icon}</span>
+          <span className="text-xs font-black uppercase tracking-widest bg-black/30 px-4 py-1.5 rounded-full mb-3">
+            {badge}
+          </span>
+          <h2 className="text-2xl md:text-3xl font-black leading-tight mb-2">{title}</h2>
+          <p className="text-sm font-semibold opacity-90 leading-relaxed max-w-xs">{detail}</p>
+        </div>
+
+        <button
+          onClick={onDismiss}
+          className="w-full py-4 px-6 rounded-2xl bg-white text-slate-900 font-extrabold text-base hover:bg-slate-100 transition-colors shadow-lg active:scale-95"
+        >
+          Scan Next Ticket →
+        </button>
+
+        <p className="text-xs opacity-60 font-semibold">Press Esc or Nav Back to return to scanner</p>
+      </div>
     </div>
   )
 }
@@ -364,12 +507,31 @@ export function CameraScanner({
 }) {
   const [station, setStation] = useState(() => initialStation || localStorage.getItem('scanner_station') || '')
   const [input, setInput] = useState('')
-  const [qr, setQr] = useState('')
   const [result, setResult] = useState<ScanResult | null>(null)
   const [isOnline, setIsOnline] = useState(navigator.onLine)
   const [pendingCount, setPendingCount] = useState(0)
   const [syncing, setSyncing] = useState(false)
   const [syncLog, setSyncLog] = useState<Array<{ token: string; outcome: string; station_id?: string | null; checked_in_at?: string | null }>>([])
+  const [soundEnabled, setSoundEnabled] = useState(() => {
+    const saved = localStorage.getItem('scanner_sound_enabled')
+    return saved === null ? true : saved === 'true'
+  })
+  const [recentScans, setRecentScans] = useState<Array<{
+    id: string
+    timestamp: string
+    type: ScanResultType
+    title: string
+    detail: string
+    tokenSnippet: string
+  }>>([])
+
+  const toggleSound = () => {
+    setSoundEnabled((prev) => {
+      const next = !prev
+      localStorage.setItem('scanner_sound_enabled', String(next))
+      return next
+    })
+  }
 
   const loadPendingCount = useCallback(async () => {
     const pending = await getPendingScans()
@@ -482,10 +644,55 @@ export function CameraScanner({
 
     const scannedAt = new Date().toISOString()
 
+    const recordScanOutcome = (res: ScanResult) => {
+      setResult(res)
+      playAudioFeedback(res.type, soundEnabled)
+      triggerHapticFeedback(res.type)
+
+      let title = ''
+      let detail = ''
+
+      if (res.type === 'success') {
+        title = `Checked in — ${res.name || 'Guest'}`
+        detail = `Accepted by server (${station})`
+        toast.success(`✅ ${title}`, { duration: 4000 })
+      } else if (res.type === 'duplicate') {
+        const timeText = res.checked_in_at ? formatTime(res.checked_in_at) : ''
+        const stationText = res.station_id ? ` (${res.station_id})` : ''
+        title = 'Already checked in'
+        detail = `Used ${timeText ? `at ${timeText}` : 'earlier'}${stationText}`
+        toast.error(`⛔ Already checked in${timeText ? ` at ${timeText}` : ''}${stationText}`, { duration: 5000 })
+      } else if (res.type === 'expired') {
+        title = 'Expired QR pass'
+        detail = 'Ask attendee to refresh their QR'
+        toast.error(`⚠️ ${title} — Ask attendee to refresh QR`, { duration: 5000 })
+      } else if (res.type === 'invalid') {
+        title = res.message || 'Invalid QR code'
+        detail = 'Code invalid or unrecognized'
+        toast.error(`❌ ${title}`, { duration: 5000 })
+      } else if (res.type === 'queued') {
+        title = 'Queued offline'
+        detail = `${res.pendingCount || 1} pending sync`
+        toast(`🟡 Queued offline (${res.pendingCount || 1} pending)`, { duration: 4000, icon: '🟡' })
+      }
+
+      setRecentScans((prev) => [
+        {
+          id: Math.random().toString(36).substring(2, 9),
+          timestamp: new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' }),
+          type: res.type,
+          title,
+          detail,
+          tokenSnippet: trimmed.length > 14 ? `${trimmed.slice(0, 12)}…` : trimmed,
+        },
+        ...prev.slice(0, 14),
+      ])
+    }
+
     // Check local synced cache first
     const syncedLocal = await getSyncedResult(trimmed)
     if (syncedLocal) {
-      setResult({
+      recordScanOutcome({
         type: 'duplicate',
         checked_in_at: syncedLocal.checked_in_at || undefined,
         station_id: syncedLocal.station_id || undefined,
@@ -506,24 +713,22 @@ export function CameraScanner({
       const body = await response.json()
 
       if (response.ok) {
-        setResult({ type: 'success', name: body.checkin?.attendee_name || 'Guest' })
-        setQr('')
+        recordScanOutcome({ type: 'success', name: body.checkin?.attendee_name || 'Guest' })
       } else if (response.status === 409 && body.error?.code === 'ALREADY_CHECKED_IN') {
         const message = body.error?.message || 'Already checked in'
         const isoMatch = message.match(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?/i)
         const stationMatch = message.match(/\(([^)]+)\)/)
-        setResult({
+        recordScanOutcome({
           type: 'duplicate',
           checked_in_at: isoMatch ? isoMatch[0] : (body.existing?.checked_in_at || message),
           station_id: stationMatch ? stationMatch[1] : (body.existing?.station_id || undefined),
         })
       } else if (response.status === 410 && body.error?.code === 'TOKEN_EXPIRED') {
-        setResult({ type: 'expired' })
+        recordScanOutcome({ type: 'expired' })
       } else if (response.status === 404 && body.error?.code === 'TOKEN_INVALID') {
-        setResult({ type: 'invalid', message: 'Invalid QR code' })
+        recordScanOutcome({ type: 'invalid', message: 'Invalid QR code' })
       } else {
-        setResult({ type: 'invalid', message: body.error?.message || 'Scan failed' })
-        toast.error(body.error?.message || 'Scan failed')
+        recordScanOutcome({ type: 'invalid', message: body.error?.message || 'Scan failed' })
       }
     } catch (e) {
       // Network failure -> queue locally if well-formed
@@ -536,28 +741,23 @@ export function CameraScanner({
             queued_at: scannedAt,
           })
           setPendingCount(updatedList.length)
-          setResult({ type: 'queued', pendingCount: updatedList.length })
+          recordScanOutcome({ type: 'queued', pendingCount: updatedList.length })
           if (updatedList.length >= 400) {
             toast.error(`Queue high (${updatedList.length}/500 pending). Please connect to sync!`)
           }
         } catch (queueErr) {
-          toast.error((queueErr as Error).message || 'Failed to queue scan')
+          recordScanOutcome({ type: 'invalid', message: (queueErr as Error).message || 'Failed to queue scan' })
         }
       } else {
-        setResult({ type: 'invalid', message: 'Malformed scan' })
+        recordScanOutcome({ type: 'invalid', message: 'Malformed scan' })
       }
     }
   }
 
-  async function handleManualScan(event: FormEvent) {
-    event.preventDefault()
-    if (!qr.trim()) return
-    await processToken(qr.trim())
-  }
-
   const handleCameraScan = useCallback(async (decodedText: string) => {
+    if (result) return
     await processToken(decodedText)
-  }, [station, token])
+  }, [station, token, result])
 
   if (!station) {
     return (
@@ -596,6 +796,18 @@ export function CameraScanner({
             <h1 className="mt-2 font-display text-3xl font-extrabold">{station}</h1>
           </div>
           <div className="flex items-center gap-3">
+            <button
+              onClick={toggleSound}
+              className={`flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-bold border transition-colors ${
+                soundEnabled
+                  ? 'bg-slate-800 text-emerald-300 border-emerald-500/30 hover:bg-slate-700'
+                  : 'bg-slate-800/60 text-slate-400 border-white/10 hover:bg-slate-800'
+              }`}
+              title={soundEnabled ? 'Mute scanner audio feedback' : 'Unmute scanner audio feedback'}
+            >
+              {soundEnabled ? <Volume2 size={14} className="text-emerald-400" /> : <VolumeX size={14} className="text-slate-400" />}
+              <span>{soundEnabled ? 'Sound On' : 'Muted'}</span>
+            </button>
             {pendingCount > 0 && (
               <button
                 onClick={triggerSync}
@@ -666,22 +878,46 @@ export function CameraScanner({
           {result && <ScanResultOverlay result={result} onDismiss={() => setResult(null)} />}
         </div>
 
-        {/* Manual input fallback */}
-        <div className="mt-6 rounded-2xl border border-white/10 bg-slate-800 p-5">
-          <p className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-3">Or paste QR token manually</p>
-          <form onSubmit={handleManualScan} className="flex flex-col gap-3 sm:flex-row">
-            <input
-              className="input flex-1 bg-slate-900 border-white/10 text-white"
-              value={qr}
-              onChange={(e) => setQr(e.target.value)}
-              placeholder="Paste QR token"
-            />
-            <button className="button button-secondary" disabled={!qr.trim()}>
-              Check in
-            </button>
-          </form>
-        </div>
+        {/* Recent Scans Live Activity Log */}
+        {recentScans.length > 0 && (
+          <div className="mt-6 rounded-2xl border border-white/10 bg-slate-800/80 p-5">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <Clock size={16} className="text-brand-300" />
+                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-300">Live Scan Feedback Feed</h3>
+              </div>
+              <button
+                onClick={() => setRecentScans([])}
+                className="text-xs text-slate-400 hover:text-slate-200 flex items-center gap-1 transition-colors"
+              >
+                <Trash2 size={12} /> Clear history
+              </button>
+            </div>
+            <div className="space-y-2.5 max-h-60 overflow-y-auto pr-1">
+              {recentScans.map((item) => (
+                <div key={item.id} className="flex items-center justify-between rounded-xl bg-slate-900/80 p-3 text-sm border border-white/5">
+                  <div className="flex items-center gap-3 min-w-0">
+                    {item.type === 'success' && <span className="rounded-full bg-emerald-500/20 text-emerald-400 p-1"><CheckCircle size={16} /></span>}
+                    {item.type === 'duplicate' && <span className="rounded-full bg-amber-500/20 text-amber-400 p-1"><AlertOctagon size={16} /></span>}
+                    {item.type === 'expired' && <span className="rounded-full bg-amber-400/20 text-amber-300 p-1"><AlertTriangle size={16} /></span>}
+                    {item.type === 'invalid' && <span className="rounded-full bg-rose-500/20 text-rose-400 p-1"><XCircle size={16} /></span>}
+                    {item.type === 'queued' && <span className="rounded-full bg-blue-500/20 text-blue-400 p-1"><Clock size={16} /></span>}
+                    <div className="min-w-0">
+                      <p className="font-bold text-slate-200 truncate">{item.title}</p>
+                      <p className="text-xs text-slate-400 truncate">{item.detail}</p>
+                    </div>
+                  </div>
+                  <div className="text-right pl-3 flex-shrink-0">
+                    <span className="text-xs text-slate-400 font-mono block">{item.timestamp}</span>
+                    <span className="text-[10px] text-slate-500 font-mono block truncate">{item.tokenSnippet}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )
 }
+

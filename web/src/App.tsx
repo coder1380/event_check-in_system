@@ -20,6 +20,20 @@ const dateLabel = (date: string) => new Intl.DateTimeFormat(undefined, { month: 
 const toDateInput = (date: string) => { const value = new Date(date); const offset = value.getTimezoneOffset(); return new Date(value.getTime() - offset * 60000).toISOString().slice(0, 16) }
 const messageFor = (body: { error?: { message?: string } }) => body?.error?.message || 'Something went wrong. Please try again.'
 
+export class ApiError extends Error {
+    status: number
+    code?: string
+    expires_in?: number
+    expires_at?: string
+    constructor(message: string, status: number, body?: any) {
+        super(message)
+        this.status = status
+        this.code = body?.error?.code
+        this.expires_in = body?.error?.expires_in
+        this.expires_at = body?.error?.expires_at
+    }
+}
+
 async function request<T>(path: string, options: RequestInit = {}, token?: string): Promise<T> {
     const currentToken = token || localStorage.getItem('access_token') || ''
     const response = await fetch(`${API}/api/v1${path}`, {
@@ -62,7 +76,7 @@ async function request<T>(path: string, options: RequestInit = {}, token?: strin
             }
             window.dispatchEvent(new Event('auth:unauthorized'))
         }
-        throw new Error(messageFor(body))
+        throw new ApiError(messageFor(body), response.status, body)
     }
     return body as T
 }
@@ -106,8 +120,255 @@ function PageHeader({ eyebrow, title, children }: { eyebrow?: string; title: str
 function Stat({ label, value, accent = '' }: { label: string; value: string | number; accent?: string }) { return <div className="stat-card"><span className="text-xs font-bold uppercase tracking-[.14em] text-muted">{label}</span><strong className={`mt-3 block font-display text-3xl font-extrabold ${accent}`}>{value}</strong></div> }
 function EventsPage() { const { token } = useAuth(); const [events, setEvents] = useState<EventItem[]>([]); const [loading, setLoading] = useState(true); useEffect(() => { request<{ events: EventItem[] }>('/events', {}, token!).then(data => setEvents(data.events)).catch(e => toast.error(e.message)).finally(() => setLoading(false)) }, [token]); async function register(id: string) { try { await request(`/events/${id}/register`, { method: 'POST', body: '{}' }, token!); toast.success('You are on the list.'); setEvents(events.map(item => item.id === id ? { ...item, registered_count: item.registered_count + 1, spots_remaining: item.spots_remaining - 1 } : item)) } catch (e) { toast.error((e as Error).message) } } return <div className="page-shell"><PageHeader eyebrow="Find your next room" title="Upcoming events"><span className="pill"><CalendarDays size={15} /> {events.length} available</span></PageHeader>{loading ? <Skeletons /> : events.length === 0 ? <Empty icon={<CalendarDays />} title="No events just yet" body="Check back soon. The calendar is still warming up." /> : <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">{events.map(event => <EventCard event={event} key={event.id} onRegister={() => register(event.id)} />)}</div>}</div> }
 function EventCard({ event, onRegister }: { event: EventItem; onRegister: () => void }) { const fullness = Math.min(100, event.registered_count / event.capacity * 100); return <article className="surface group flex flex-col justify-between p-5"><div><div className="mb-8 flex items-start justify-between"><span className="date-chip"><CalendarDays size={15} />{new Date(event.event_date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</span><span className="text-xs font-bold text-muted">{new Date(event.event_date).getFullYear()}</span></div><h2 className="font-display text-xl font-extrabold leading-tight">{event.name}</h2><p className="mt-2 text-sm text-muted">{dateLabel(event.event_date)}</p></div><div className="mt-8"><div className="mb-2 flex justify-between text-xs font-semibold"><span className="text-muted">Capacity</span><span className={event.spots_remaining < 1 ? 'text-coral' : 'text-mint'}>{event.spots_remaining > 0 ? `${event.spots_remaining} spots left` : 'Sold out'}</span></div><div className="h-2 overflow-hidden rounded-full bg-slate-100 dark:bg-white/10"><div className={`h-full rounded-full ${event.spots_remaining < 1 ? 'bg-coral' : 'bg-mint'}`} style={{ width: `${fullness}%` }} /></div><Button className="mt-5 w-full" variant={event.spots_remaining < 1 ? 'secondary' : 'primary'} disabled={event.spots_remaining < 1} onClick={onRegister}>{event.spots_remaining < 1 ? 'Event is full' : 'Register now'}{event.spots_remaining > 0 && <ChevronRight size={16} />}</Button></div></article> }
-function RegistrationsPage() { const { token } = useAuth(); const [items, setItems] = useState<Registration[]>([]); useEffect(() => { request<{ registrations: Registration[] }>('/registrations', {}, token!).then(data => setItems(data.registrations)).catch(e => toast.error(e.message)) }, [token]); return <div className="page-shell max-w-4xl"><PageHeader eyebrow="Your place is saved" title="My registrations"><span className="pill"><Ticket size={15} /> {items.length} tickets</span></PageHeader>{items.length ? <div className="space-y-4">{items.map(item => <div className="surface flex flex-col gap-5 p-5 sm:flex-row sm:items-center sm:justify-between" key={item.id}><div className="flex items-start gap-4"><span className="number-badge"><Ticket size={18} /></span><div><h2 className="font-display text-lg font-extrabold">{item.event_name}</h2><p className="mt-1 text-sm text-muted">{dateLabel(item.event_date)}</p></div></div><div className="flex items-center gap-3">{item.checked_in_at ? <span className="status status-success"><Check size={14} /> Checked in</span> : <Link className="button button-secondary" to={`/registrations/${item.id}/qr`}><QrCode size={16} /> Show QR</Link>}</div></div>)}</div> : <Empty icon={<Ticket />} title="No registrations yet" body="Find an event that feels like your kind of room." link="/events" linkText="Browse events" />}</div> }
-function QRPage() { const { id } = useParams(); const { token } = useAuth(); const [value, setValue] = useState<{ token: string; expires_at: string } | null>(null); const [now, setNow] = useState(() => Date.now()); const remaining = value ? Math.max(0, Math.ceil((new Date(value.expires_at).getTime() - now) / 1000)) : 0; useEffect(() => { async function refresh() { try { const result = await request<{ token: string; expires_at: string }>(`/registrations/${id}/qr-token`, {}, token!); setValue(result) } catch (e) { toast.error((e as Error).message) } } const initial = window.setTimeout(refresh, 0); const timer = window.setInterval(refresh, 55000); return () => { clearTimeout(initial); clearInterval(timer) } }, [id, token]); useEffect(() => { const timer = window.setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(timer) }, []); useEffect(() => { if (value) QRCode.toCanvas(document.getElementById('qr-canvas') as HTMLCanvasElement, value.token, { width: 260, margin: 2, color: { dark: '#172033', light: '#ffffff' } }) }, [value]); return <div className="min-h-[calc(100vh-4rem)] bg-ink px-5 py-10 text-white"><div className="mx-auto max-w-md"><Link to="/my-registrations" className="mb-10 inline-flex items-center gap-2 text-sm text-slate-300 hover:text-white">← Back to tickets</Link><div className="text-center"><p className="eyebrow text-brand-300">Your live pass</p><h1 className="mt-3 font-display text-3xl font-extrabold">Event entry code</h1><p className="mt-3 text-slate-400">Show this code at the door. It refreshes every minute.</p></div><div className="mx-auto mt-10 flex max-w-xs flex-col items-center rounded-[2rem] bg-white p-6 text-ink shadow-2xl"><div className="rounded-2xl bg-slate-50 p-3"><canvas id="qr-canvas" width="260" height="260" /></div><div className="mt-6 flex items-center gap-3"><div className="countdown"><span>{remaining}</span></div><div><p className="font-bold">Code refreshes automatically</p><p className="text-sm text-slate-500">Keep this screen open</p></div></div></div></div></div> }
+function RegistrationsPage() { const { token } = useAuth(); const [items, setItems] = useState<Registration[]>([]); useEffect(() => { request<{ registrations: Registration[] }>('/registrations', {}, token!).then(data => setItems(data.registrations)).catch(e => toast.error(e.message)) }, [token]); return <div className="page-shell max-w-4xl"><PageHeader eyebrow="Your place is saved" title="My registrations"><span className="pill"><Ticket size={15} /> {items.length} tickets</span></PageHeader>{items.length ? <div className="space-y-4">{items.map(item => <div className="surface flex flex-col gap-5 p-5 sm:flex-row sm:items-center sm:justify-between" key={item.id}><div className="flex items-start gap-4"><span className="number-badge"><Ticket size={18} /></span><div><h2 className="font-display text-lg font-extrabold">{item.event_name}</h2><p className="mt-1 text-sm text-muted">{dateLabel(item.event_date)}</p></div></div><div className="flex items-center gap-3">{item.checked_in_at && <span className="status status-success"><Check size={14} /> Checked in</span>}<Link className="button button-secondary" to={`/registrations/${item.id}/qr`}><QrCode size={16} /> Show QR</Link></div></div>)}</div> : <Empty icon={<Ticket />} title="No registrations yet" body="Find an event that feels like your kind of room." link="/events" linkText="Browse events" />}</div> }
+type QrTokenResponse = {
+  token: string
+  expires_at: string
+  session_id: string
+  refresh_count: number
+  refreshes_remaining: number
+}
+
+function QRPage() {
+  const { id } = useParams()
+  const { token } = useAuth()
+  const navigate = useNavigate()
+
+  const [value, setValue] = useState<QrTokenResponse | null>(null)
+  const [activeError, setActiveError] = useState<{ code: string; message: string; expires_in: number; expires_at: string } | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [now, setNow] = useState(() => Date.now())
+  const [refreshing, setRefreshing] = useState(false)
+
+  const storageKey = `qr_prev_session_${id}`
+
+  const fetchPass = useCallback(async (isAutoRefresh = false) => {
+    try {
+      setLoading(!isAutoRefresh)
+      setRefreshing(isAutoRefresh)
+
+      let path = `/registrations/${id}/qr-token`
+
+      if (isAutoRefresh && value) {
+        path += `?session_id=${encodeURIComponent(value.session_id)}&refresh_count=${value.refresh_count + 1}`
+      } else {
+        const prevSession = sessionStorage.getItem(storageKey)
+        if (prevSession) {
+          path += `?invalidate_session_id=${encodeURIComponent(prevSession)}`
+          sessionStorage.removeItem(storageKey)
+        }
+      }
+
+      const result = await request<QrTokenResponse>(path, {}, token!)
+      setValue(result)
+      setActiveError(null)
+    } catch (e) {
+      const err = e as ApiError
+      if (err.status === 409 || err.code === 'TOKEN_ACTIVE') {
+        setActiveError({
+          code: err.code || 'TOKEN_ACTIVE',
+          message: err.message || 'An active QR pass already exists.',
+          expires_in: err.expires_in || 60,
+          expires_at: err.expires_at || '',
+        })
+      } else if (err.code === 'SESSION_REFRESH_LIMIT') {
+        toast('Maximum auto-refreshes reached. Please request a new code.', { icon: 'ℹ️' })
+      } else {
+        toast.error((e as Error).message)
+      }
+    } finally {
+      setLoading(false)
+      setRefreshing(false)
+    }
+  }, [id, token, value])
+
+  const handleClose = useCallback(() => {
+    if (value?.session_id) {
+      sessionStorage.setItem(storageKey, value.session_id)
+      fetch(`${API}/api/v1/registrations/${id}/qr-token/active`, {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ session_id: value.session_id }),
+      }).catch(() => {})
+    }
+    navigate('/my-registrations')
+  }, [value, id, token, navigate])
+
+  useEffect(() => {
+    fetchPass(false)
+    return () => {
+      if (value?.session_id) {
+        sessionStorage.setItem(storageKey, value.session_id)
+      }
+    }
+  }, [id])
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [])
+
+  const remaining = value ? Math.max(0, Math.ceil((new Date(value.expires_at).getTime() - now) / 1000)) : 0
+  const activeErrorRemaining = activeError ? Math.max(0, Math.ceil((new Date(activeError.expires_at).getTime() - now) / 1000)) : 0
+
+  useEffect(() => {
+    if (value && remaining <= 5 && remaining > 0 && !refreshing && !loading) {
+      if (value.refreshes_remaining > 0) {
+        fetchPass(true)
+      }
+    }
+  }, [remaining, value, refreshing, loading, fetchPass])
+
+  useEffect(() => {
+    if (value) {
+      const canvas = document.getElementById('qr-canvas') as HTMLCanvasElement
+      if (canvas) {
+        QRCode.toCanvas(canvas, value.token, {
+          width: 240,
+          margin: 2,
+          color: { dark: '#0f172a', light: '#ffffff' },
+        })
+      }
+    }
+  }, [value])
+
+  const maxRefreshes = 3
+  const totalRounds = maxRefreshes + 1
+  const isLastRound = value ? value.refreshes_remaining === 0 : false
+  const isExpired = remaining <= 0
+
+  return (
+    <div className="min-h-[calc(100vh-4rem)] bg-ink px-5 py-10 text-white">
+      <div className="mx-auto max-w-md">
+        <button
+          onClick={handleClose}
+          className="mb-8 inline-flex items-center gap-2 text-sm font-semibold text-slate-300 hover:text-white transition-colors"
+        >
+          ← Back to tickets
+        </button>
+
+        <div className="text-center">
+          <p className="eyebrow text-brand-300">Your live pass</p>
+          <h1 className="mt-2 font-display text-3xl font-extrabold">Event entry code</h1>
+          <p className="mt-2 text-sm text-slate-400">Show this QR code at the door for access.</p>
+        </div>
+
+        {activeError ? (
+          <div className="mx-auto mt-8 flex max-w-xs flex-col items-center rounded-[2rem] border border-amber-500/30 bg-slate-900/90 p-6 text-center shadow-2xl backdrop-blur-sm">
+            <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-amber-500/20 text-amber-400">
+              <QrCode size={28} />
+            </div>
+            <h2 className="font-display text-lg font-bold text-amber-300">QR Pass Already Active</h2>
+            <p className="mt-2 text-xs leading-relaxed text-slate-300">
+              An active pass is currently open on another device or screen.
+            </p>
+
+            <div className="mt-5 flex items-center gap-2 rounded-full bg-amber-500/10 px-4 py-2 text-amber-300 border border-amber-500/20">
+              <span className="text-sm">⏱</span>
+              <span className="text-xs font-bold">Expires in {activeErrorRemaining > 0 ? activeErrorRemaining : activeError.expires_in}s</span>
+            </div>
+
+            <p className="mt-4 text-[11px] text-slate-400">
+              Once it expires, you can generate a new pass here.
+            </p>
+
+            <button
+              onClick={() => fetchPass(false)}
+              className="button button-primary mt-6 w-full text-xs font-bold"
+            >
+              Try generating new pass
+            </button>
+          </div>
+        ) : (
+          <div className="mx-auto mt-8 flex max-w-xs flex-col items-center rounded-[2rem] bg-slate-900 border border-white/10 p-6 text-white shadow-2xl">
+            {value && (
+              <div className="mb-3 flex flex-col items-center gap-1.5">
+                <div className="flex items-center gap-1.5">
+                  {Array.from({ length: totalRounds }).map((_, i) => (
+                    <span
+                      key={i}
+                      className={`h-2 rounded-full transition-all ${
+                        i === value.refresh_count
+                          ? 'w-5 bg-brand-400'
+                          : i < value.refresh_count
+                          ? 'w-2 bg-brand-500/60'
+                          : 'w-2 bg-slate-700'
+                      }`}
+                    />
+                  ))}
+                </div>
+                <span className={`text-[11px] font-semibold ${isLastRound ? 'text-amber-300' : 'text-slate-400'}`}>
+                  {isLastRound
+                    ? 'Final pass round — manual refresh required after'
+                    : `Auto-refreshes ${value.refreshes_remaining} more time${value.refreshes_remaining === 1 ? '' : 's'}`}
+                </span>
+              </div>
+            )}
+
+            <div className="relative mt-2 flex h-[260px] w-[260px] items-center justify-center rounded-2xl bg-white p-3 shadow-inner">
+              {loading ? (
+                <div className="flex flex-col items-center gap-2 text-slate-600">
+                  <div className="h-8 w-8 animate-spin rounded-full border-2 border-brand-500 border-t-transparent" />
+                  <span className="text-xs font-semibold">Generating QR…</span>
+                </div>
+              ) : isExpired && isLastRound ? (
+                <div className="flex flex-col items-center p-4 text-center text-slate-800">
+                  <span className="text-3xl">⌛</span>
+                  <span className="mt-2 text-sm font-bold text-amber-600">Session Completed</span>
+                  <span className="mt-1 text-xs text-slate-500">Tap button below to request a fresh QR code.</span>
+                </div>
+              ) : (
+                <canvas id="qr-canvas" width="240" height="240" />
+              )}
+            </div>
+
+            {value && !loading && (
+              <div className="mt-5 flex flex-col items-center w-full">
+                <div
+                  className={`flex items-center gap-2 rounded-full px-4 py-1.5 text-xs font-bold transition-colors ${
+                    isExpired
+                      ? 'bg-red-500/20 text-red-300 border border-red-500/30'
+                      : remaining <= 10
+                      ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30 animate-pulse'
+                      : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                  }`}
+                >
+                  <span>⏱</span>
+                  <span>
+                    {isExpired
+                      ? 'Pass Expired'
+                      : isLastRound
+                      ? `Expires in ${remaining}s (Last pass)`
+                      : `Refreshes in ${remaining}s`}
+                  </span>
+                </div>
+
+                {isExpired && (
+                  <button
+                    onClick={() => fetchPass(false)}
+                    className="button button-primary mt-4 w-full text-xs font-bold"
+                  >
+                    Request New QR Pass
+                  </button>
+                )}
+              </div>
+            )}
+
+            <button
+              onClick={handleClose}
+              className="button button-secondary mt-5 w-full text-xs font-semibold text-slate-300"
+            >
+              Close Pass & Invalidate
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
 function OrganizerDashboard() { const { token } = useAuth(); const [events, setEvents] = useState<EventItem[]>([]); useEffect(() => { request<{ events: EventItem[] }>('/events', {}, token!).then(data => setEvents(data.events)).catch(e => toast.error(e.message)) }, [token]); return <div className="page-shell"><PageHeader eyebrow="Your command center" title="Your events"><Link className="button button-primary" to="/dashboard/events/new"><Plus size={17} /> Create event</Link></PageHeader>{events.length ? <div className="surface overflow-hidden"><div className="hidden grid-cols-[1.5fr_1fr_1fr_auto] gap-4 border-b border-line px-5 py-4 text-xs font-bold uppercase tracking-widest text-muted md:grid"><span>Event</span><span>Date</span><span>Attendance</span><span /></div>{events.map(event => <div className="grid gap-4 border-b border-line px-5 py-5 last:border-0 md:grid-cols-[1.5fr_1fr_1fr_auto] md:items-center dark:border-white/10" key={event.id}><div><h2 className="font-display font-bold">{event.name}</h2><p className="mt-1 text-sm text-muted">{event.spots_remaining} spots remaining</p></div><p className="text-sm text-muted">{dateLabel(event.event_date)}</p><div><p className="font-bold">{event.registered_count} <span className="font-normal text-muted">/ {event.capacity}</span></p><div className="mt-2 h-1.5 w-28 rounded-full bg-slate-100 dark:bg-white/10"><div className="h-full rounded-full bg-brand-500" style={{ width: `${event.registered_count / event.capacity * 100}%` }} /></div></div><Link className="button button-secondary" to={`/dashboard/events/${event.id}`}>View live <ChevronRight size={15} /></Link></div>)}</div> : <Empty icon={<LayoutDashboard />} title="Your calendar is clear" body="Create an event and give people somewhere worth showing up." link="/dashboard/events/new" linkText="Create your first event" />}</div> }
 function CreateEvent({ edit = false }: { edit?: boolean }) { const { id } = useParams(); const { token } = useAuth(); const navigate = useNavigate(); const [initial, setInitial] = useState<EventItem | null>(null); const [loading, setLoading] = useState(false); useEffect(() => { if (edit && id) request<{ event: EventItem }>(`/events/${id}`, {}, token!).then(d => setInitial(d.event)).catch(e => toast.error(e.message)) }, [edit, id, token]); async function submit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); setLoading(true); const data = Object.fromEntries(new FormData(event.currentTarget)); try { const body = { name: data.name, event_date: new Date(data.event_date as string).toISOString(), capacity: Number(data.capacity) }; const result = await request<{ event: EventItem }>(edit ? `/events/${id}` : '/events', { method: edit ? 'PATCH' : 'POST', body: JSON.stringify(body) }, token!); toast.success(edit ? 'Event updated.' : 'Event created.'); navigate(`/dashboard/events/${result.event.id}`) } catch (e) { toast.error((e as Error).message) } finally { setLoading(false) } } return <div className="page-shell max-w-2xl"><Link to={edit ? `/dashboard/events/${id}` : '/dashboard'} className="back-link">← {edit ? 'Back to event' : 'Your events'}</Link><PageHeader eyebrow={edit ? 'Make a change' : 'Set the room'} title={edit ? 'Edit event' : 'Create an event'} /><form onSubmit={submit} className="surface space-y-6 p-6 sm:p-8"><Field label="Event name" name="name" placeholder="A night worth remembering" /><label className="field-label">Date & time<input required className="input mt-2" type="datetime-local" name="event_date" defaultValue={initial ? toDateInput(initial.event_date) : ''} /></label><label className="field-label">Capacity<input required className="input mt-2" type="number" min={initial?.registered_count || 1} name="capacity" defaultValue={initial?.capacity || ''} /><span className="mt-2 block text-xs font-normal text-muted">Set the maximum number of people you can welcome.</span></label><div className="flex flex-col-reverse gap-3 pt-3 sm:flex-row sm:justify-end"><Link className="button button-ghost justify-center" to={edit ? `/dashboard/events/${id}` : '/dashboard'}>Cancel</Link><Button disabled={loading}>{loading ? 'Saving…' : edit ? 'Save changes' : 'Create event'}<ChevronRight size={16} /></Button></div></form></div> }
 function LiveDashboard() {

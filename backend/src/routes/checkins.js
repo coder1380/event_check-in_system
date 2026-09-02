@@ -82,7 +82,7 @@ router.post('/', async (req, res, next) => {
 			await client.query('COMMIT');
 			const counts = await pool.query(`SELECT e.capacity, e.registered_count, COUNT(c.id)::int AS checked_in_count FROM events e LEFT JOIN registrations r ON r.event_id = e.id LEFT JOIN checkins c ON c.registration_id = r.id WHERE e.id = $1 GROUP BY e.id`, [outcome.token.event_id]);
 			broadcastCheckin({ registration_id: outcome.checkin.registration_id, attendee_name: outcome.token.attendee_name, checked_in_at: outcome.checkin.checked_in_at, station_id: outcome.checkin.station_id, source: outcome.checkin.source, checked_in_count: counts.rows[0].checked_in_count, spots_remaining: counts.rows[0].capacity - counts.rows[0].registered_count });
-			res.status(201).json({ checkin: { registration_id: outcome.checkin.registration_id, checked_in_at: outcome.checkin.checked_in_at, station_id: outcome.checkin.station_id } });
+			res.status(201).json({ checkin: { registration_id: outcome.checkin.registration_id, checked_in_at: outcome.checkin.checked_in_at, station_id: outcome.checkin.station_id, attendee_name: outcome.token.attendee_name } });
 		} catch (error) { await client.query('ROLLBACK').catch(() => {}); next(error); } finally { client.release(); }
 	} catch (error) { next(error); }
 });

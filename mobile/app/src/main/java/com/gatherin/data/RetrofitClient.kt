@@ -13,6 +13,7 @@ import okhttp3.Route
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
+import androidx.core.content.edit
 
 /**
  * Persistent session storage backed by SharedPreferences.
@@ -25,6 +26,7 @@ object SessionManager {
     private const val KEY_ACCESS = "access_token"
     private const val KEY_REFRESH = "refresh_token"
     private const val KEY_USER = "user"
+    private const val KEY_SERVER_URL = "custom_server_url"
 
     private lateinit var prefs: SharedPreferences
     private val gson = Gson()
@@ -41,6 +43,9 @@ object SessionManager {
     val refreshToken: String?
         get() = if (::prefs.isInitialized) prefs.getString(KEY_REFRESH, null) else null
 
+    val customServerUrl: String?
+        get() = if (::prefs.isInitialized) prefs.getString(KEY_SERVER_URL, null) else null
+
     fun savedUser(): User? =
         if (::prefs.isInitialized) prefs.getString(KEY_USER, null)?.let {
             runCatching { gson.fromJson(it, User::class.java) }.getOrNull()
@@ -49,22 +54,27 @@ object SessionManager {
     /** Persist tokens + user after login / registration. */
     fun saveSession(user: User?, access: String?, refresh: String?) {
         if (!::prefs.isInitialized) return
-        access?.let { prefs.edit().putString(KEY_ACCESS, it).apply() }
-        refresh?.let { prefs.edit().putString(KEY_REFRESH, it).apply() }
-        user?.let { prefs.edit().putString(KEY_USER, gson.toJson(it)).apply() }
+        access?.let { prefs.edit { putString(KEY_ACCESS, it) } }
+        refresh?.let { prefs.edit { putString(KEY_REFRESH, it) } }
+        user?.let { prefs.edit { putString(KEY_USER, gson.toJson(it)) } }
     }
 
     /** Rotate tokens only (used by the automatic 401 refresher). */
     fun rotateTokens(access: String, refresh: String) {
         if (!::prefs.isInitialized) return
-        prefs.edit()
-            .putString(KEY_ACCESS, access)
-            .putString(KEY_REFRESH, refresh)
-            .apply()
+        prefs.edit {
+            putString(KEY_ACCESS, access)
+                .putString(KEY_REFRESH, refresh)
+        }
+    }
+
+    fun saveServerUrl(url: String) {
+        if (!::prefs.isInitialized) return
+        prefs.edit { putString(KEY_SERVER_URL, RetrofitClient.normalizeBaseUrl(url)) }
     }
 
     fun clear() {
-        if (::prefs.isInitialized) prefs.edit().clear().apply()
+        if (::prefs.isInitialized) prefs.edit { clear() }
     }
 }
 
@@ -76,17 +86,45 @@ object SessionManager {
  */
 object RetrofitClient {
 
-    // Production URL on Railway.
-    // Local dev via Android emulator can use http://10.0.2.2:3000/api/v1/ instead.
-    private const val BASE_URL = "https://event-checkin-backend-production-87a2.up.railway.app/api/v1/"
+//    private const val BASE_URL = "https://event-checkin-backend-production-87a2.up.railway.app/api/v1/"
+//    const val DEFAULT_BASE_URL = "https://wool-refuse-anthem.ngrok-free.dev/api/v1/"
+    const val DEFAULT_BASE_URL = "https://event-checkin-backend-production-87a2.up.railway.app/api/v1/"
+
+    fun normalizeBaseUrl(rawUrl: String): String {
+        var trimmed = rawUrl.trim()
+        if (trimmed.isEmpty()) return DEFAULT_BASE_URL
+        if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://")) {
+            trimmed = "http://$trimmed"
+        }
+        if (!trimmed.contains("/api/v1")) {
+            trimmed = if (trimmed.endsWith("/")) "${trimmed}api/v1/" else "$trimmed/api/v1/"
+        }
+        if (!trimmed.endsWith("/")) {
+            trimmed = "$trimmed/"
+        }
+        return trimmed
+    }
+
+    val BASE_URL: String
+        get() = normalizeBaseUrl(SessionManager.customServerUrl ?: DEFAULT_BASE_URL)
 
     /** Origin URL (no /api/v1 path) used for the Socket.IO connection. */
-    val SOCKET_BASE_URL: String =
-        BASE_URL.substringBefore("/api/v1")
+    val SOCKET_BASE_URL: String
+        get() = BASE_URL.substringBefore("/api/v1")
 
     private val authInterceptor = Interceptor { chain ->
         val req = chain.request().newBuilder().apply {
+            addHeader("ngrok-skip-browser-warning", "true")
+            addHeader("User-Agent", "Gatherin-Android-App")
             SessionManager.accessToken?.let { addHeader("Authorization", "Bearer $it") }
+        }.build()
+        chain.proceed(req)
+    }
+
+    private val refreshInterceptor = Interceptor { chain ->
+        val req = chain.request().newBuilder().apply {
+            addHeader("ngrok-skip-browser-warning", "true")
+            addHeader("User-Agent", "Gatherin-Android-App")
         }.build()
         chain.proceed(req)
     }
@@ -140,33 +178,50 @@ object RetrofitClient {
         }
     }
 
-    private val okHttpClient = OkHttpClient.Builder()
-        .authenticator(tokenAuthenticator)
-        .addInterceptor(authInterceptor)
-        .addInterceptor(loggingInterceptor)
-        .build()
+    private var currentBaseUrl: String? = null
+    private var currentApi: ApiService? = null
+    private var currentRefreshApi: ApiService? = null
 
-    /** Bare client without auth interceptor/authenticator — used for the refresh call itself. */
-    private val refreshClient = OkHttpClient.Builder()
-        .addInterceptor(loggingInterceptor)
-        .build()
+    val api: ApiService
+        get() {
+            val url = BASE_URL
+            if (currentApi == null || currentBaseUrl != url) {
+                synchronized(this) {
+                    val activeUrl = BASE_URL
+                    val okHttpClient = OkHttpClient.Builder()
+                        .authenticator(tokenAuthenticator)
+                        .addInterceptor(authInterceptor)
+                        .addInterceptor(loggingInterceptor)
+                        .build()
 
-    private val retrofit by lazy {
-        Retrofit.Builder()
-            .baseUrl(BASE_URL)
-            .client(okHttpClient)
-            .addConverterFactory(GsonConverterFactory.create())
-            .build()
-    }
+                    val retrofit = Retrofit.Builder()
+                        .baseUrl(activeUrl)
+                        .client(okHttpClient)
+                        .addConverterFactory(GsonConverterFactory.create())
+                        .build()
 
-    private val refreshRetrofit by lazy {
-        Retrofit.Builder()
-            .baseUrl(BASE_URL)
-            .client(refreshClient)
-            .addConverterFactory(GsonConverterFactory.create())
-            .build()
-    }
+                    val refreshClient = OkHttpClient.Builder()
+                        .addInterceptor(refreshInterceptor)
+                        .addInterceptor(loggingInterceptor)
+                        .build()
 
-    val api: ApiService by lazy { retrofit.create(ApiService::class.java) }
-    private val refreshApi: ApiService by lazy { refreshRetrofit.create(ApiService::class.java) }
+                    val refreshRetrofit = Retrofit.Builder()
+                        .baseUrl(activeUrl)
+                        .client(refreshClient)
+                        .addConverterFactory(GsonConverterFactory.create())
+                        .build()
+
+                    currentBaseUrl = activeUrl
+                    currentApi = retrofit.create(ApiService::class.java)
+                    currentRefreshApi = refreshRetrofit.create(ApiService::class.java)
+                }
+            }
+            return currentApi!!
+        }
+
+    val refreshApi: ApiService
+        get() {
+            api // Ensures currentRefreshApi is initialized
+            return currentRefreshApi!!
+        }
 }

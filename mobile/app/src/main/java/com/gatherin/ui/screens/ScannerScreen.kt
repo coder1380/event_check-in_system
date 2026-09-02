@@ -2,6 +2,7 @@ package com.gatherin.ui.screens
 
 import android.Manifest
 import android.content.pm.PackageManager
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
@@ -10,18 +11,32 @@ import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.animation.*
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.drawText
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.gatherin.MainViewModel
@@ -33,13 +48,19 @@ import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
 import java.util.concurrent.Executors
 
+private data class ScanDisplayInfo(
+    val bgColor: Color,
+    val icon: String,
+    val title: String,
+    val detail: String
+)
+
 @Composable
 fun ScannerScreen(vm: MainViewModel) {
     val context = LocalContext.current
     val scanResult by vm.scanResult.collectAsStateWithLifecycle()
 
     var stationId by remember { mutableStateOf("station-app-1") }
-    var scanInput by remember { mutableStateOf("") }
 
     var hasCameraPermission by remember {
         mutableStateOf(
@@ -57,8 +78,25 @@ fun ScannerScreen(vm: MainViewModel) {
         }
     )
 
+    val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
+    LaunchedEffect(scanResult) {
+        scanResult?.let { result ->
+            when (result) {
+                is ScanResult.Success -> haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                is ScanResult.Duplicate -> haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                is ScanResult.Error -> haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+            }
+        }
+    }
+
     LaunchedEffect(key1 = true) {
         launcher.launch(Manifest.permission.CAMERA)
+    }
+
+    // ── System Back Button Hook ──────────────────────────────────────────────
+    // When scan result popup is open, system back closes the popup and returns to scanner
+    BackHandler(enabled = scanResult != null) {
+        vm.clearScanResult()
     }
 
     Scaffold(
@@ -83,113 +121,30 @@ fun ScannerScreen(vm: MainViewModel) {
                 shape     = RoundedCornerShape(20.dp),
                 colors    = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                 elevation = CardDefaults.cardElevation(4.dp),
-                modifier  = Modifier.fillMaxWidth().height(400.dp)
+                modifier  = Modifier.fillMaxWidth().height(420.dp)
             ) {
                 if (hasCameraPermission) {
-                    CameraPreview(
-                        onQrCodeDetected = { token ->
-                            vm.processCheckin(token, stationId)
-                        }
-                    )
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        CameraPreview(
+                            isPaused = scanResult != null,
+                            onQrCodeDetected = { token ->
+                                if (scanResult == null) {
+                                    vm.processCheckin(token, stationId)
+                                }
+                            }
+                        )
+                        ScanFocusOverlay(modifier = Modifier.fillMaxSize())
+                    }
                 } else {
                     Box(
                         modifier = Modifier.fillMaxSize(),
-                        contentAlignment = androidx.compose.ui.Alignment.Center
+                        contentAlignment = Alignment.Center
                     ) {
                         Text(
                             text = "Camera permission required to scan",
                             style = MaterialTheme.typography.bodyMedium,
                             color = SlateGray
                         )
-                    }
-                }
-            }
-
-            // ── Manual Token Scanner Card ───────────────────────────────────
-            Card(
-                shape     = RoundedCornerShape(20.dp),
-                colors    = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                elevation = CardDefaults.cardElevation(4.dp),
-                modifier  = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(20.dp)) {
-                    Text(
-                        text  = "Manual Token Scanner",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                    Spacer(Modifier.height(12.dp))
-
-                    OutlinedTextField(
-                        value         = scanInput,
-                        onValueChange = { scanInput = it },
-                        placeholder   = { Text("Paste QR code token", color = SlateGray) },
-                        singleLine    = false,
-                        minLines      = 3,
-                        shape         = RoundedCornerShape(10.dp),
-                        colors        = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor   = BrandBlue,
-                            unfocusedBorderColor = MaterialTheme.colorScheme.outline,
-                            focusedTextColor     = MaterialTheme.colorScheme.onSurface,
-                            unfocusedTextColor   = MaterialTheme.colorScheme.onSurface,
-                            cursorColor          = BrandBlue,
-                            focusedContainerColor   = MaterialTheme.colorScheme.surfaceVariant,
-                            unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant
-                        ),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    Spacer(Modifier.height(12.dp))
-
-                    Button(
-                        onClick  = {
-                            if (scanInput.isNotBlank()) {
-                                vm.processCheckin(scanInput, stationId)
-                                scanInput = ""
-                            }
-                        },
-                        enabled  = scanInput.isNotBlank(),
-                        shape    = RoundedCornerShape(10.dp),
-                        colors   = ButtonDefaults.buttonColors(containerColor = BrandBlue),
-                        modifier = Modifier.fillMaxWidth().height(50.dp)
-                    ) {
-                        Text("Process Check-in →", color = Color.White,
-                            style = MaterialTheme.typography.labelLarge)
-                    }
-                }
-            }
-
-            // ── Result Banner ───────────────────────────────────────────────
-            AnimatedVisibility(
-                visible = scanResult != null,
-                enter   = slideInVertically() + fadeIn(),
-                exit    = slideOutVertically() + fadeOut()
-            ) {
-                scanResult?.let { result ->
-                    val (bgColor, fgColor, message) = when (result) {
-                        is ScanResult.Success   -> Triple(GreenSuccessBg, GreenSuccessText, result.message)
-                        is ScanResult.Duplicate -> Triple(OrangeWarningBg, OrangeWarningText, result.message)
-                        is ScanResult.Error     -> Triple(RedErrorBg, RedErrorText, result.message)
-                    }
-                    Card(
-                        shape     = RoundedCornerShape(12.dp),
-                        colors    = CardDefaults.cardColors(containerColor = bgColor),
-                        modifier  = Modifier.fillMaxWidth()
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(16.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text(
-                                text     = message,
-                                style    = MaterialTheme.typography.labelLarge,
-                                color    = fgColor,
-                                modifier = Modifier.weight(1f)
-                            )
-                            TextButton(onClick = { vm.clearScanResult() }) {
-                                Text("✕", color = fgColor)
-                            }
-                        }
                     }
                 }
             }
@@ -222,14 +177,130 @@ fun ScannerScreen(vm: MainViewModel) {
             }
         }
     }
+
+    // ── Fullscreen Scan Result Popup Modal ──────────────────────────────────
+    if (scanResult != null) {
+        val result = scanResult!!
+        val info = when (result) {
+            is ScanResult.Success -> ScanDisplayInfo(
+                bgColor = Color(0xFF059669), // Emerald 600
+                icon    = "✅",
+                title   = "ENTRY GRANTED",
+                detail  = result.message
+            )
+            is ScanResult.Duplicate -> ScanDisplayInfo(
+                bgColor = Color(0xFFD97706), // Amber 600
+                icon    = "⛔",
+                title   = "ALREADY CHECKED IN",
+                detail  = result.message
+            )
+            is ScanResult.Error -> ScanDisplayInfo(
+                bgColor = Color(0xFFDC2626), // Rose 600
+                icon    = "❌",
+                title   = "SCAN REJECTED",
+                detail  = result.message
+            )
+        }
+
+        Dialog(
+            onDismissRequest = { vm.clearScanResult() },
+            properties = DialogProperties(
+                usePlatformDefaultWidth = false,
+                dismissOnBackPress      = true,
+                dismissOnClickOutside   = false
+            )
+        ) {
+            Surface(
+                modifier = Modifier.fillMaxSize(),
+                color    = info.bgColor
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.SpaceBetween
+                ) {
+                    // Header close button
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        IconButton(onClick = { vm.clearScanResult() }) {
+                            Icon(
+                                imageVector        = Icons.Default.Close,
+                                contentDescription = "Close",
+                                tint               = Color.White
+                            )
+                        }
+                    }
+
+                    // Main Result Details
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center,
+                        modifier            = Modifier.weight(1f)
+                    ) {
+                        Text(
+                            text     = info.icon,
+                            fontSize = 80.sp
+                        )
+                        Spacer(Modifier.height(20.dp))
+                        Surface(
+                            shape    = RoundedCornerShape(50),
+                            color    = Color.Black.copy(alpha = 0.25f),
+                            modifier = Modifier.padding(bottom = 16.dp)
+                        ) {
+                            Text(
+                                text     = info.title,
+                                style    = MaterialTheme.typography.labelLarge.copy(
+                                    fontWeight    = FontWeight.Black,
+                                    letterSpacing = 2.sp
+                                ),
+                                color    = Color.White,
+                                modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
+                            )
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            text      = info.detail,
+                            style     = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
+                            color     = Color.White,
+                            textAlign = TextAlign.Center,
+                            modifier  = Modifier.fillMaxWidth(0.9f)
+                        )
+                    }
+
+                    // Action Button to clear result and scan next person
+                    Button(
+                        onClick  = { vm.clearScanResult() },
+                        shape    = RoundedCornerShape(16.dp),
+                        colors   = ButtonDefaults.buttonColors(
+                            containerColor = Color.White,
+                            contentColor   = info.bgColor
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(56.dp)
+                    ) {
+                        Text(
+                            text  = "Scan Next Ticket →",
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                        )
+                    }
+                }
+            }
+        }
+    }
 }
 
 @Composable
 fun CameraPreview(
+    isPaused: Boolean,
     onQrCodeDetected: (String) -> Unit
 ) {
     val context = LocalContext.current
-    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val cameraExecutor = remember { Executors.newSingleThreadExecutor() }
 
     DisposableEffect(Unit) {
@@ -265,6 +336,11 @@ fun CameraPreview(
             val scanner = BarcodeScanning.getClient(options)
 
             imageAnalysis.setAnalyzer(cameraExecutor) { imageProxy ->
+                if (isPaused) {
+                    imageProxy.close()
+                    return@setAnalyzer
+                }
+
                 @androidx.annotation.OptIn(androidx.camera.core.ExperimentalGetImage::class)
                 val mediaImage = imageProxy.image
                 if (mediaImage != null) {
@@ -277,7 +353,7 @@ fun CameraPreview(
                                 }
                             }
                         }
-                        .addOnFailureListener { e ->
+                        .addOnFailureListener {
                             // Handle failure
                         }
                         .addOnCompleteListener {
@@ -300,5 +376,60 @@ fun CameraPreview(
                 // Log or handle error
             }
         }, ContextCompat.getMainExecutor(context))
+    }
+}
+
+@Composable
+fun ScanFocusOverlay(modifier: Modifier = Modifier) {
+    val frameColor   = BrandBlue
+    val scrimColor   = Color(0x66000000)
+    val hint = "Align the QR code within the frame"
+
+    val textMeasurer = rememberTextMeasurer()
+    val hintLayout = remember {
+        textMeasurer.measure(
+            text = hint,
+            style = TextStyle(
+                color      = Color.White,
+                fontSize   = 13.sp,
+                fontWeight = FontWeight.Medium,
+                textAlign  = TextAlign.Center
+            )
+        )
+    }
+
+    Canvas(modifier = modifier.fillMaxSize()) {
+        val frame      = size.minDimension * 0.72f
+        val left       = (size.width - frame) / 2f
+        val top        = (size.height - frame) / 2f
+        val right      = left + frame
+        val bottom     = top + frame
+        val cornerLen  = 26.dp.toPx()
+        val strokeW    = 4.dp.toPx()
+
+        val width  = size.width
+        val height = size.height
+        drawRect(scrimColor, topLeft = Offset(0f, 0f),     size = Size(width, top))
+        drawRect(scrimColor, topLeft = Offset(0f, bottom), size = Size(width, height - bottom))
+        drawRect(scrimColor, topLeft = Offset(0f, top),    size = Size(left, bottom - top))
+        drawRect(scrimColor, topLeft = Offset(right, top), size = Size(width - right, bottom - top))
+
+        // Corner brackets
+        drawLine(frameColor, Offset(left, top + cornerLen), Offset(left, top), strokeWidth = strokeW)
+        drawLine(frameColor, Offset(left, top), Offset(left + cornerLen, top), strokeWidth = strokeW)
+
+        drawLine(frameColor, Offset(right, top), Offset(right - cornerLen, top), strokeWidth = strokeW)
+        drawLine(frameColor, Offset(right, top + cornerLen), Offset(right, top), strokeWidth = strokeW)
+
+        drawLine(frameColor, Offset(left, bottom - cornerLen), Offset(left, bottom), strokeWidth = strokeW)
+        drawLine(frameColor, Offset(left, bottom), Offset(left + cornerLen, bottom), strokeWidth = strokeW)
+
+        drawLine(frameColor, Offset(right, bottom - cornerLen), Offset(right, bottom), strokeWidth = strokeW)
+        drawLine(frameColor, Offset(right, bottom), Offset(right - cornerLen, bottom), strokeWidth = strokeW)
+
+        drawText(
+            textLayoutResult = hintLayout,
+            topLeft          = Offset((size.width - hintLayout.size.width.toFloat()) / 2f, bottom + 20.dp.toPx())
+        )
     }
 }

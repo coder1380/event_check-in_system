@@ -80,7 +80,7 @@ router.post('/:id/register', requireRole('attendee'), async (req, res, next) => 
 		broadcastStats(eventId, { registered_count: capacity.rows[0].registered_count, spots_remaining: capacity.rows[0].capacity - capacity.rows[0].registered_count });
 		res.status(201).json({ registration: registration.rows[0] });
 	} catch (error) {
-		await client.query('ROLLBACK').catch(() => {});
+		await client.query('ROLLBACK').catch(() => { });
 		if (error.code === '23505') return next(createError(409, 'ALREADY_REGISTERED', 'You are already registered for this event.'));
 		if (error.code === '23503') return next(createError(404, 'NOT_FOUND', 'Event not found.'));
 		next(error);

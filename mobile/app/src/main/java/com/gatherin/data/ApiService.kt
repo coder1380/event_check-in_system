@@ -47,7 +47,25 @@ interface ApiService {
     suspend fun cancelRegistration(@Path("id") registrationId: String): Response<GenericResponse>
 
     @GET("registrations/{id}/qr-token")
-    suspend fun getQrToken(@Path("id") registrationId: String): Response<QrTokenResponse>
+    suspend fun getQrToken(
+        @Path("id") registrationId: String,
+        @Query("invalidate_session_id") invalidateSessionId: String? = null,
+    ): Response<QrTokenResponse>
+
+    /** Auto-refresh: presents session_id + the NEXT refresh_count to get a new token. */
+    @GET("registrations/{id}/qr-token")
+    suspend fun refreshQrToken(
+        @Path("id") registrationId: String,
+        @Query("session_id") sessionId: String,
+        @Query("refresh_count") refreshCount: Int,
+    ): Response<QrTokenResponse>
+
+    /** Called when user closes the QR panel — invalidates the active token immediately. */
+    @DELETE("registrations/{id}/qr-token/active")
+    suspend fun invalidateQrToken(
+        @Path("id") registrationId: String,
+        @Body body: QrInvalidateRequest,
+    ): Response<Unit>
 
     // ── Check-in ──────────────────────────────────────────────────────────────
     @POST("checkins")

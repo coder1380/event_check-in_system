@@ -94,7 +94,31 @@ data class RegistrationsResponse(val registrations: List<Registration>?)
 
 data class QrTokenResponse(
     val token: String?,
-    @SerializedName("expires_at") val expiresAt: String?
+    @SerializedName("expires_at")         val expiresAt: String?,
+    @SerializedName("session_id")          val sessionId: String?,
+    @SerializedName("refresh_count")       val refreshCount: Int = 0,
+    @SerializedName("refreshes_remaining") val refreshesRemaining: Int = 0
+)
+
+data class QrInvalidateRequest(
+    @SerializedName("session_id") val sessionId: String
+)
+
+/** Returned by the server (409 TOKEN_ACTIVE) when a valid QR is still live. */
+data class QrActiveError(
+    val expiresIn: Int,          // seconds remaining
+    val expiresAt: String        // ISO-8601
+)
+
+data class QrActiveErrorBody(
+    val error: QrActiveErrorDetail?
+)
+
+data class QrActiveErrorDetail(
+    val code: String?,
+    val message: String?,
+    @SerializedName("expires_in")  val expiresIn: Int?,
+    @SerializedName("expires_at")  val expiresAt: String?
 )
 
 data class CheckinResponse(
@@ -108,6 +132,13 @@ data class CheckinDetail(
 
 data class AiResponse(val answer: String?)
 
-data class ApiError(val message: String?)
+data class ApiError(
+    val code: String? = null,
+    val message: String? = null
+)
+
+data class ApiErrorContainer(
+    val error: ApiError? = null
+)
 
 data class GenericResponse(val error: ApiError?)

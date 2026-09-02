@@ -3,6 +3,8 @@ package com.gatherin
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.gatherin.data.*
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -57,12 +59,34 @@ class MainViewModel : ViewModel() {
     private val _qrToken = MutableStateFlow<QrTokenResponse?>(null)
     val qrToken: StateFlow<QrTokenResponse?> = _qrToken.asStateFlow()
 
+    /** Populated when the server says a valid pass is already active (409 TOKEN_ACTIVE). */
+    private val _qrActiveError = MutableStateFlow<QrActiveError?>(null)
+    val qrActiveError: StateFlow<QrActiveError?> = _qrActiveError.asStateFlow()
+
+    /** Currently open registration ID (for auto-refresh). */
+    private var _qrRegistrationId: String? = null
+    /** Auto-refresh coroutine job — cancelled on dismiss. */
+    private var _qrRefreshJob: Job? = null
+    /**
+     * Session ID of the last closed QR panel.
+     * Passed to the next fetchQrToken() call as ?invalidate_session_id so the
+     * server atomically kills the old token and issues a new one in ONE transaction.
+     * This makes re-open after close instantaneous with zero race condition window.
+     */
+    private var _prevSessionId: String? = null
+    /** Max auto-refreshes per session. */
+    private val MAX_REFRESHES = 3
+
     // ── Scanner ───────────────────────────────────────────────────────────────
     private val _scanResult = MutableStateFlow<ScanResult?>(null)
     val scanResult: StateFlow<ScanResult?> = _scanResult.asStateFlow()
 
     private var lastToken: String? = null
     private var lastScanTime = 0L
+
+    // CameraX reports the same QR on every analysed frame while it stays in view;
+    // this is the window during which we treat those repeats as one continuous scan.
+    private val scanCooldownMs = 1200L
 
     // ── AI Query ──────────────────────────────────────────────────────────────
     private val _aiAnswer = MutableStateFlow<String?>(null)
@@ -108,7 +132,7 @@ class MainViewModel : ViewModel() {
                 _authError.value = body?.error?.message ?: "Authentication failed"
             }
         } catch (e: Exception) {
-            _authError.value = "Unable to connect to server. Is the backend running?"
+            _authError.value = "Connection error: ${e.localizedMessage ?: e.message ?: "Is the backend running?"}"
         } finally {
             _authLoading.value = false
         }
@@ -130,7 +154,7 @@ class MainViewModel : ViewModel() {
                     _authError.value = body?.error?.message ?: "Registration failed"
                 }
             } catch (e: Exception) {
-                _authError.value = "Unable to connect to server."
+                _authError.value = "Connection error: ${e.localizedMessage ?: e.message ?: "Unable to connect to server."}"
             } finally {
                 _authLoading.value = false
             }
@@ -153,6 +177,11 @@ class MainViewModel : ViewModel() {
         _scanResult.value    = null
         _aiAnswer.value      = null
         _selectedEventId.value = null
+        _qrToken.value       = null
+        _qrActiveError.value = null
+        _qrRefreshJob?.cancel()
+        _qrRefreshJob        = null
+        _prevSessionId       = null
     }
 
     private fun loadInitialData(user: User) {
@@ -202,15 +231,111 @@ class MainViewModel : ViewModel() {
     }
 
     fun fetchQrToken(registrationId: String) = viewModelScope.launch {
+        // Pass any previously-closed session ID so the server atomically
+        // invalidates it and issues a new token in one transaction.
+        // This eliminates the race between a separate DELETE and the GET.
+        val invalidate = _prevSessionId
+        _prevSessionId = null
+
+        _qrRegistrationId = registrationId
         try {
-            val res = api.getQrToken(registrationId)
-            if (res.isSuccessful) _qrToken.value = res.body()
+            val res = api.getQrToken(registrationId, invalidateSessionId = invalidate)
+            when {
+                res.isSuccessful -> {
+                    _qrToken.value = res.body()
+                    _qrActiveError.value = null
+                    scheduleAutoRefresh(registrationId, res.body())
+                }
+                res.code() == 409 -> handle409(res)
+                else -> _snackMessage.value = parseError(res) ?: "Failed to generate QR code."
+            }
         } catch (_: Exception) {
-            _snackMessage.value = "Failed to generate QR code."
+            _snackMessage.value = "Network error. Could not fetch QR pass."
         }
     }
 
-    fun clearQrToken() { _qrToken.value = null }
+    /**
+     * Schedules automatic QR refresh ~5 s before the current token expires.
+     * If [MAX_REFRESHES] have been used up the coroutine just lets the timer
+     * expire and closes the panel — the user must open it again manually.
+     */
+    private fun scheduleAutoRefresh(registrationId: String, current: QrTokenResponse?) {
+        _qrRefreshJob?.cancel()
+        if (current == null) return
+
+        val refreshesLeft = current.refreshesRemaining
+        if (refreshesLeft <= 0) {
+            // No more auto-refreshes — let the countdown run out and close the panel
+            _qrRefreshJob = viewModelScope.launch {
+                delay(65_000L) // slightly past the 60 s TTL
+                dismissQrPanel()
+            }
+            return
+        }
+
+        // Fire ~5 s before the 60 s window closes
+        _qrRefreshJob = viewModelScope.launch {
+            delay(55_000L)
+            // Still the same registration open?
+            if (_qrRegistrationId != registrationId) return@launch
+            val currentToken = _qrToken.value ?: return@launch
+            val sessionId = currentToken.sessionId ?: return@launch
+            val nextCount = currentToken.refreshCount + 1
+
+            try {
+                val res = api.refreshQrToken(registrationId, sessionId, nextCount)
+                when {
+                    res.isSuccessful -> {
+                        _qrToken.value = res.body()
+                        scheduleAutoRefresh(registrationId, res.body()) // recurse for next cycle
+                    }
+                    res.code() == 409 -> {
+                        // SESSION_REFRESH_LIMIT or SESSION_MISMATCH — close panel gracefully
+                        dismissQrPanel()
+                    }
+                    else -> dismissQrPanel()
+                }
+            } catch (_: Exception) {
+                // Network error during auto-refresh — close rather than leave stale QR
+                dismissQrPanel()
+            }
+        }
+    }
+
+    /**
+     * Called when the user closes the QR panel OR when auto-refresh gives up.
+     *
+     * Saves the current session_id to [_prevSessionId] so that the NEXT call to
+     * [fetchQrToken] can pass it as ?invalidate_session_id — the server will then
+     * atomically mark the old token consumed and issue a new one in a single
+     * transaction, guaranteeing zero race condition window.
+     */
+    fun dismissQrPanel() {
+        _qrRefreshJob?.cancel()
+        _qrRefreshJob = null
+
+        // Capture session before clearing state
+        _prevSessionId = _qrToken.value?.sessionId
+
+        _qrToken.value       = null
+        _qrActiveError.value = null
+        _qrRegistrationId    = null
+    }
+
+    private fun handle409(res: retrofit2.Response<*>) {
+        val body = try {
+            res.errorBody()?.string()?.let { json ->
+                com.google.gson.Gson().fromJson(json, QrActiveErrorBody::class.java)
+            }
+        } catch (_: Exception) { null }
+        val detail = body?.error
+        val expiresIn = detail?.expiresIn ?: 60
+        val expiresAt = detail?.expiresAt ?: ""
+        _qrActiveError.value = QrActiveError(expiresIn, expiresAt)
+    }
+
+    fun clearQrToken()       { _qrToken.value = null }
+    fun clearQrActiveError() { _qrActiveError.value = null }
 
     // ─────────────────────────────────────────────────────────────────────────
     // Dashboard
@@ -340,8 +465,9 @@ class MainViewModel : ViewModel() {
     fun clearCsv() { _csvContent.value = null }
 
     private fun parseError(res: retrofit2.Response<*>): String? = try {
-        res.errorBody()?.string()?.let {
-            com.google.gson.Gson().fromJson(it, ApiError::class.java)?.message
+        res.errorBody()?.string()?.let { json ->
+            val container = com.google.gson.Gson().fromJson(json, com.gatherin.data.ApiErrorContainer::class.java)
+            container?.error?.message ?: com.google.gson.Gson().fromJson(json, com.gatherin.data.ApiError::class.java)?.message
         }
     } catch (_: Exception) { null }
 
@@ -372,7 +498,14 @@ class MainViewModel : ViewModel() {
             val now = System.currentTimeMillis()
             val trimmedToken = token.trim()
 
-            if (trimmedToken == lastToken && now - lastScanTime < 2000) {
+            // CameraX fires the same token on every analysed frame while the QR stays
+            // in view. Swallow those fast repeats so we don't hammer the API — but if
+            // the previous attempt errored, allow an immediate retry instead of
+            // silently suppressing it for the whole cooldown window.
+            val sameToken      = trimmedToken == lastToken
+            val withinCooldown = now - lastScanTime < scanCooldownMs
+            val previousFailed = _scanResult.value is ScanResult.Error
+            if (sameToken && withinCooldown && !previousFailed) {
                 return@launch
             }
 
@@ -382,33 +515,34 @@ class MainViewModel : ViewModel() {
             try {
                 val res = api.processCheckin(CheckinRequest(trimmedToken, stationId))
                 val body = res.body()
+                val parsedMsg = parseError(res)
 
                 _scanResult.value = when {
                     res.isSuccessful -> {
+                        // First-time scan → clear success message.
                         ScanResult.Success(
                             "✅ Checked in: ${body?.checkin?.attendeeName ?: "Guest"}"
                         )
                     }
                     res.code() == 409 -> {
-                        val errorJson = res.errorBody()?.string()
-                        val apiError = try {
-                            com.google.gson.Gson().fromJson(errorJson, ApiError::class.java)
-                        } catch (_: Exception) {
-                            null
-                        }
+                        // Ticket was scanned before → reused / duplicate ticket.
                         ScanResult.Duplicate(
-                            "⚠ ${apiError?.message ?: "Already checked in"}"
+                            "⛔ ${parsedMsg ?: "Already checked in — possible ticket reuse"}"
+                        )
+                    }
+                    res.code() == 410 -> {
+                        ScanResult.Error(
+                            "⚠️ ${parsedMsg ?: "Expired QR pass — ask attendee to refresh code"}"
+                        )
+                    }
+                    res.code() == 404 -> {
+                        ScanResult.Error(
+                            "❌ ${parsedMsg ?: "Invalid QR code"}"
                         )
                     }
                     else -> {
-                        val errorJson = res.errorBody()?.string()
-                        val apiError = try {
-                            com.google.gson.Gson().fromJson(errorJson, ApiError::class.java)
-                        } catch (_: Exception) {
-                            null
-                        }
                         ScanResult.Error(
-                            "❌ ${apiError?.message ?: "Scan failed"}"
+                            "❌ ${parsedMsg ?: "Scan failed"}"
                         )
                     }
                 }
