@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import { BrowserRouter, Link, Navigate, Outlet, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { io } from 'socket.io-client'
@@ -15,6 +15,7 @@ type Registration = { id: string; event_id: string; event_name: string; event_da
 type Dashboard = { event_id: string; capacity: number; registered_count: number; checked_in_count: number; spots_remaining: number; attendees: { registration_id: string; name: string; checked_in_at?: string | null }[] }
 
 const API = import.meta.env.VITE_API_URL || ''
+// const API = 'https://wool-refuse-anthem.ngrok-free.dev'
 console.log("API URL:", import.meta.env.VITE_API_URL);
 const dateLabel = (date: string) => new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }).format(new Date(date))
 const toDateInput = (date: string) => { const value = new Date(date); const offset = value.getTimezoneOffset(); return new Date(value.getTime() - offset * 60000).toISOString().slice(0, 16) }
@@ -142,6 +143,8 @@ function QRPage() {
 
   const storageKey = `qr_prev_session_${id}`
 
+  const initialFetchDone = useRef(false)
+
   const fetchPass = useCallback(async (isAutoRefresh = false) => {
     try {
       setLoading(!isAutoRefresh)
@@ -198,6 +201,8 @@ function QRPage() {
   }, [value, id, token, navigate])
 
   useEffect(() => {
+    if (initialFetchDone.current) return
+    initialFetchDone.current = true
     fetchPass(false)
     return () => {
       if (value?.session_id) {

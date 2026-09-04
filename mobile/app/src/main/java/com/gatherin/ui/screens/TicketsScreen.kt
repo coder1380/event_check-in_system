@@ -19,6 +19,23 @@ import com.gatherin.ui.theme.*
 import java.text.SimpleDateFormat
 import java.util.*
 
+private fun parseIsoDate(iso: String?): Date? {
+    if (iso == null) return null
+    val formats = listOf(
+        "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",
+        "yyyy-MM-dd'T'HH:mm:ss'Z'",
+        "yyyy-MM-dd'T'HH:mm:ssXXX",
+        "yyyy-MM-dd'T'HH:mm:ss.SSSXXX",
+    )
+    for (fmt in formats) {
+        try {
+            val sdf = SimpleDateFormat(fmt, Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }
+            return sdf.parse(iso)
+        } catch (_: Exception) {}
+    }
+    return null
+}
+
 @Composable
 fun TicketsScreen(vm: MainViewModel) {
     val registrations  by vm.registrations.collectAsStateWithLifecycle()
@@ -41,7 +58,7 @@ fun TicketsScreen(vm: MainViewModel) {
     if (qrActiveError != null) {
         val error = qrActiveError!!
         ActiveQrDialog(
-            expiresIn = error.expiresIn,
+            expiresIn = error.expiresIn.coerceAtMost(60),
             onDismiss = { vm.clearQrActiveError() }
         )
     }
@@ -176,14 +193,15 @@ private fun ActiveQrDialog(expiresIn: Int, onDismiss: () -> Unit) {
 private fun TicketCard(registration: Registration, onShowQr: () -> Unit, onCancel: () -> Unit) {
     var showCancelDialog by remember { mutableStateOf(false) }
     val dateFormat = remember { SimpleDateFormat("MMM d, yyyy", Locale.getDefault()) }
-    val parsed     = remember(registration.eventDate) {
-        runCatching {
-            SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.getDefault())
-                .parse(registration.eventDate)
-        }.getOrNull()
-    }
+    val parsed     = remember(registration.eventDate) { parseIsoDate(registration.eventDate) }
     val dateStr   = parsed?.let { dateFormat.format(it) } ?: "—"
     val checkedIn = registration.checkedInAt != null
+
+    val checkedInTimeStr = remember(registration.checkedInAt) {
+        parseIsoDate(registration.checkedInAt)?.let { 
+            SimpleDateFormat("MMM d, HH:mm", Locale.getDefault()).format(it)
+        }
+    }
 
     Card(
         shape     = RoundedCornerShape(16.dp),
@@ -205,7 +223,7 @@ private fun TicketCard(registration: Registration, onShowQr: () -> Unit, onCance
                     color = MaterialTheme.colorScheme.secondaryContainer
                 ) {
                     Text(
-                        text     = "✅ Checked in",
+                        text     = "✅ Checked in ${checkedInTimeStr ?: ""}",
                         style    = MaterialTheme.typography.labelMedium,
                         color    = MaterialTheme.colorScheme.onSecondaryContainer,
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)

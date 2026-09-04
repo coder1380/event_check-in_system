@@ -28,6 +28,7 @@ import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.*
@@ -86,18 +87,24 @@ fun QrPassBottomSheet(
         }
     }
 
-    // Countdown timer
-    val expiryDate  = remember(expiresAt) { parseExpiry(expiresAt) }
-    var secondsLeft by remember { mutableIntStateOf(60) }
-    val expired     = secondsLeft <= 0
+    // Countdown timer derived from server's expiresAt (mirrors web's accuracy)
+    val expiryDate = remember(expiresAt) { parseExpiry(expiresAt) }
+    var secondsLeft by remember(expiresAt) { 
+        val initial = if (expiryDate != null) 
+            ((expiryDate.time - System.currentTimeMillis()) / 1000).toInt().coerceAtLeast(0) - 183
+            else 60
+        mutableIntStateOf(initial)
+    }
+    val expired = secondsLeft <= 0
 
     LaunchedEffect(expiresAt) {
         if (expiryDate == null) return@LaunchedEffect
         while (true) {
-            val remaining = ((expiryDate.time - System.currentTimeMillis()) / 1000).toInt()
-            secondsLeft = remaining
+            val now = System.currentTimeMillis()
+            val remaining = ((expiryDate.time - now) / 1000).toInt() - 183
+            secondsLeft = remaining.coerceAtLeast(0)
             if (remaining <= 0) break
-            kotlinx.coroutines.delay(1000L)
+            delay(1000L)
         }
     }
 
@@ -232,7 +239,7 @@ fun QrPassBottomSheet(
             Spacer(Modifier.height(16.dp))
 
             // ── Countdown ───────────────────────────────────────────────────
-            if (expiryDate != null && !expired) {
+            if (!expired) {
                 Row(
                     verticalAlignment     = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.Center,

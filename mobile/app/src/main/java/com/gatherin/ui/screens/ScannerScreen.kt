@@ -17,7 +17,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.VolumeOff
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Wifi
+import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -25,6 +29,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.TextStyle
@@ -41,11 +46,16 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.gatherin.MainViewModel
 import com.gatherin.ScanResult
+import com.gatherin.data.local.SyncedScanEntity
 import com.gatherin.ui.theme.*
 import com.google.mlkit.vision.barcode.BarcodeScannerOptions
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
+import kotlinx.coroutines.delay
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.Executors
 
 private data class ScanDisplayInfo(
@@ -82,10 +92,13 @@ fun ScannerScreen(vm: MainViewModel) {
     LaunchedEffect(scanResult) {
         scanResult?.let { result ->
             when (result) {
-                is ScanResult.Success -> haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
-                is ScanResult.Duplicate -> haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
-                is ScanResult.Error -> haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                is ScanResult.Success -> haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                is ScanResult.Duplicate, is ScanResult.Error -> haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                is ScanResult.Queued -> haptic.performHapticFeedback(HapticFeedbackType.LongPress)
             }
+            // Auto-dismiss after 3 seconds
+            delay(3000L)
+            vm.clearScanResult()
         }
     }
 
@@ -99,12 +112,46 @@ fun ScannerScreen(vm: MainViewModel) {
         vm.clearScanResult()
     }
 
+    val isOnline by vm.isOnline.collectAsStateWithLifecycle()
+    val isSoundEnabled by vm.isSoundEnabled.collectAsStateWithLifecycle()
+    val pendingCount by vm.pendingScansCount.collectAsStateWithLifecycle()
+    val syncedHistory by vm.syncedScans.collectAsStateWithLifecycle()
+
     Scaffold(
         topBar = {
             AppTopBar(
                 title   = stationId,
                 eyebrow = "DOOR SCANNER STATION",
-                onSignOut = { vm.signOut() }
+                onSignOut = { vm.signOut() },
+                actions = {
+                    IconButton(onClick = { vm.toggleSound() }) {
+                        Icon(
+                            imageVector = if (isSoundEnabled) Icons.AutoMirrored.Filled.VolumeUp else Icons.AutoMirrored.Filled.VolumeOff,
+                            contentDescription = "Toggle Sound",
+                            tint = if (isSoundEnabled) BrandBlue else SlateGray
+                        )
+                    }
+                    if (pendingCount > 0) {
+                        Surface(
+                            color = Color(0xFF2563EB),
+                            shape = RoundedCornerShape(50),
+                            modifier = Modifier.padding(end = 8.dp)
+                        ) {
+                            Text(
+                                text = pendingCount.toString(),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color.White,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
+                    Icon(
+                        imageVector = if (isOnline) Icons.Default.Wifi else Icons.Default.WifiOff,
+                        contentDescription = if (isOnline) "Online" else "Offline",
+                        tint = if (isOnline) Color(0xFF10B981) else Color(0xFFEF4444),
+                        modifier = Modifier.padding(end = 8.dp)
+                    )
+                }
             )
         }
     ) { padding ->
@@ -175,6 +222,82 @@ fun ScannerScreen(vm: MainViewModel) {
                     )
                 }
             }
+
+            // ── Manual Token Scanner Card ───────────────────────────────────
+            var scanInput by remember { mutableStateOf("") }
+            Card(
+                shape     = RoundedCornerShape(20.dp),
+                colors    = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                elevation = CardDefaults.cardElevation(4.dp),
+                modifier  = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(20.dp)) {
+                    Text(
+                        text  = "Manual Token Scanner",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Spacer(Modifier.height(12.dp))
+
+                    OutlinedTextField(
+                        value         = scanInput,
+                        onValueChange = { scanInput = it },
+                        placeholder   = { Text("Paste QR code token", color = SlateGray) },
+                        singleLine    = false,
+                        minLines      = 3,
+                        shape         = RoundedCornerShape(10.dp),
+                        colors        = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor   = BrandBlue,
+                            unfocusedBorderColor = MaterialTheme.colorScheme.outline,
+                            focusedTextColor     = MaterialTheme.colorScheme.onSurface,
+                            unfocusedTextColor   = MaterialTheme.colorScheme.onSurface,
+                            cursorColor          = BrandBlue,
+                            focusedContainerColor   = MaterialTheme.colorScheme.surfaceVariant,
+                            unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    Spacer(Modifier.height(12.dp))
+
+                    Button(
+                        onClick  = {
+                            if (scanInput.isNotBlank()) {
+                                vm.processCheckin(scanInput, stationId)
+                                scanInput = ""
+                            }
+                        },
+                        enabled  = scanInput.isNotBlank(),
+                        shape    = RoundedCornerShape(10.dp),
+                        colors   = ButtonDefaults.buttonColors(containerColor = BrandBlue),
+                        modifier = Modifier.fillMaxWidth().height(50.dp)
+                    ) {
+                        Text("Process Check-in →", color = Color.White,
+                            style = MaterialTheme.typography.labelLarge)
+                    }
+                }
+            }
+
+            // ── Live Activity Log ───────────────────────────────────────────
+            if (syncedHistory.isNotEmpty()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "RECENT ACTIVITY",
+                        style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 1.sp),
+                        color = SlateGray
+                    )
+                    TextButton(onClick = { vm.clearHistory() }) {
+                        Text("Clear", style = MaterialTheme.typography.labelSmall, color = BrandBlue)
+                    }
+                }
+                syncedHistory.forEach { scan ->
+                    ActivityLogItem(scan)
+                }
+            }
         }
     }
 
@@ -198,6 +321,12 @@ fun ScannerScreen(vm: MainViewModel) {
                 bgColor = Color(0xFFDC2626), // Rose 600
                 icon    = "❌",
                 title   = "SCAN REJECTED",
+                detail  = result.message
+            )
+            is ScanResult.Queued -> ScanDisplayInfo(
+                bgColor = Color(0xFF2563EB), // Blue 600
+                icon    = "📥",
+                title   = "SCAN QUEUED",
                 detail  = result.message
             )
         }
@@ -289,6 +418,57 @@ fun ScannerScreen(vm: MainViewModel) {
                         )
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ActivityLogItem(scan: SyncedScanEntity) {
+    val (icon, tint) = when (scan.status) {
+        "success" -> "✅" to Color(0xFF10B981)
+        "duplicate" -> "⛔" to Color(0xFFF59E0B)
+        "expired" -> "⚠️" to Color(0xFFEF4444)
+        else -> "❌" to Color(0xFFEF4444)
+    }
+
+    val timeStr = remember(scan.syncedAt) {
+        SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(scan.syncedAt))
+    }
+
+    Card(
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(0.5.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(text = icon, fontSize = 20.sp, modifier = Modifier.padding(end = 12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = scan.attendeeName ?: "Guest",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    text = "Token: ${scan.token.take(12)}... • $timeStr",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = SlateGray
+                )
+            }
+            Surface(
+                shape = RoundedCornerShape(4.dp),
+                color = tint.copy(alpha = 0.1f)
+            ) {
+                Text(
+                    text = scan.status.uppercase(),
+                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                    color = tint,
+                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                )
             }
         }
     }

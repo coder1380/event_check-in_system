@@ -70,12 +70,6 @@ router.post('/:id/register', requireRole('attendee'), async (req, res, next) => 
 			await client.query('ROLLBACK');
 			return next(createError(409, 'CAPACITY_FULL', 'This event has no remaining spots.'));
 		}
-		const token = require('crypto').randomBytes(32).toString('base64url');
-		await client.query(
-			`INSERT INTO check_in_tokens (registration_id, token, expires_at)
-			 VALUES ($1, $2, now() + interval '60 seconds')`,
-			[registration.rows[0].id, token],
-		);
 		await client.query('COMMIT');
 		broadcastStats(eventId, { registered_count: capacity.rows[0].registered_count, spots_remaining: capacity.rows[0].capacity - capacity.rows[0].registered_count });
 		res.status(201).json({ registration: registration.rows[0] });

@@ -92,7 +92,7 @@ router.post('/sync-batch', async (req, res, next) => {
 		if (req.user.role !== 'organizer') throw createError(403, 'FORBIDDEN', 'Organizer access is required.');
 		const stationId = req.body?.station_id;
 		const scans = req.body?.scans;
-		if (typeof stationId !== 'string' || !stationId.trim() || !Array.isArray(scans) || scans.length > 100) throw createError(400, 'VALIDATION_ERROR', 'station_id and up to 100 scans are required.');
+		if (typeof stationId !== 'string' || !stationId.trim() || !Array.isArray(scans) || scans.length > 1) throw createError(400, 'VALIDATION_ERROR', 'station_id and up to 1 scan are required.');
 		const results = [];
 		for (const scan of scans) {
 			if (typeof scan?.token !== 'string' || Number.isNaN(new Date(scan.client_scanned_at).getTime())) {

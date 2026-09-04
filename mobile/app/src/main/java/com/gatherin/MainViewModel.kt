@@ -1,25 +1,68 @@
 package com.gatherin
 
+import android.app.Application
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.gatherin.data.*
+import com.gatherin.data.local.*
+import com.gatherin.utils.AudioService
+import com.gatherin.utils.NetworkObserver
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
 
 // ── Scan result sealed class ──────────────────────────────────────────────────
 sealed class ScanResult {
     data class Success(val message: String) : ScanResult()
     data class Duplicate(val message: String) : ScanResult()
     data class Error(val message: String) : ScanResult()
+    data class Queued(val message: String) : ScanResult()
 }
 
 class MainViewModel : ViewModel() {
 
+    private val app = GatherinApplication.instance
     private val api get() = RetrofitClient.api
+    private val db = ScannerDatabase.getDatabase(app)
+    private val dao = db.scanDao()
+    private val networkObserver = NetworkObserver(app)
+    private val audioService = AudioService()
+
+    val isOnline = networkObserver.isConnected.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = true
+    )
+
+    private val _isSoundEnabled = MutableStateFlow(
+        app.getSharedPreferences("gatherin_settings", Context.MODE_PRIVATE)
+            .getBoolean("sound_enabled", true)
+    )
+    val isSoundEnabled = _isSoundEnabled.asStateFlow()
+
+    fun toggleSound() {
+        val newVal = !_isSoundEnabled.value
+        _isSoundEnabled.value = newVal
+        app.getSharedPreferences("gatherin_settings", Context.MODE_PRIVATE)
+            .edit().putBoolean("sound_enabled", newVal).apply()
+    }
+
+    val pendingScansCount = MutableStateFlow(0)
+    val syncedScans = dao.getSyncedScans().stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = emptyList()
+    )
 
     // Live dashboard socket (web uses Socket.IO; mobile joins the same rooms).
     private var eventSocket: EventSocketManager? = null
@@ -67,13 +110,10 @@ class MainViewModel : ViewModel() {
     private var _qrRegistrationId: String? = null
     /** Auto-refresh coroutine job — cancelled on dismiss. */
     private var _qrRefreshJob: Job? = null
-    /**
-     * Session ID of the last closed QR panel.
-     * Passed to the next fetchQrToken() call as ?invalidate_session_id so the
-     * server atomically kills the old token and issues a new one in ONE transaction.
-     * This makes re-open after close instantaneous with zero race condition window.
-     */
+    /** Session ID of the last closed QR panel. */
     private var _prevSessionId: String? = null
+    /** Prevents double-fetching if the user taps the button multiple times rapidly. */
+    private var _qrTokenFetching = false
     /** Max auto-refreshes per session. */
     private val MAX_REFRESHES = 3
 
@@ -86,7 +126,7 @@ class MainViewModel : ViewModel() {
 
     // CameraX reports the same QR on every analysed frame while it stays in view;
     // this is the window during which we treat those repeats as one continuous scan.
-    private val scanCooldownMs = 1200L
+    private val scanCooldownMs = 2000L
 
     // ── AI Query ──────────────────────────────────────────────────────────────
     private val _aiAnswer = MutableStateFlow<String?>(null)
@@ -110,6 +150,20 @@ class MainViewModel : ViewModel() {
             _user.value = savedUser
             _token.value = savedToken
             loadInitialData(savedUser)
+        }
+
+        // ── Update pending count ──────────────────────────────────────────────
+        viewModelScope.launch {
+            db.scanDao().getPendingScans().collect { scans ->
+                pendingScansCount.value = scans.size
+            }
+        }
+
+        // ── Auto-sync when online ─────────────────────────────────────────────
+        viewModelScope.launch {
+            isOnline.collect { online ->
+                if (online) syncPendingScans()
+            }
         }
     }
 
@@ -231,6 +285,9 @@ class MainViewModel : ViewModel() {
     }
 
     fun fetchQrToken(registrationId: String) = viewModelScope.launch {
+        if (_qrTokenFetching) return@launch
+        _qrTokenFetching = true
+
         // Pass any previously-closed session ID so the server atomically
         // invalidates it and issues a new token in one transaction.
         // This eliminates the race between a separate DELETE and the GET.
@@ -251,6 +308,8 @@ class MainViewModel : ViewModel() {
             }
         } catch (_: Exception) {
             _snackMessage.value = "Network error. Could not fetch QR pass."
+        } finally {
+            _qrTokenFetching = false
         }
     }
 
@@ -305,17 +364,28 @@ class MainViewModel : ViewModel() {
     /**
      * Called when the user closes the QR panel OR when auto-refresh gives up.
      *
-     * Saves the current session_id to [_prevSessionId] so that the NEXT call to
-     * [fetchQrToken] can pass it as ?invalidate_session_id — the server will then
-     * atomically mark the old token consumed and issue a new one in a single
-     * transaction, guaranteeing zero race condition window.
+     * Invalidates the active token immediately (matching web behaviour) and also
+     * saves the current session_id to [_prevSessionId] as a fallback for the NEXT
+     * call to [fetchQrToken].
      */
     fun dismissQrPanel() {
         _qrRefreshJob?.cancel()
         _qrRefreshJob = null
 
-        // Capture session before clearing state
-        _prevSessionId = _qrToken.value?.sessionId
+        val sessionId = _qrToken.value?.sessionId
+        val registrationId = _qrRegistrationId
+
+        // Capture session for fallback atomic invalidation on next open
+        _prevSessionId = sessionId
+
+        // Invalidate immediately server-side
+        if (sessionId != null && registrationId != null) {
+            viewModelScope.launch {
+                try {
+                    api.invalidateQrToken(registrationId, QrInvalidateRequest(sessionId))
+                } catch (_: Exception) { /* best effort */ }
+            }
+        }
 
         _qrToken.value       = null
         _qrActiveError.value = null
@@ -498,59 +568,127 @@ class MainViewModel : ViewModel() {
             val now = System.currentTimeMillis()
             val trimmedToken = token.trim()
 
-            // CameraX fires the same token on every analysed frame while the QR stays
-            // in view. Swallow those fast repeats so we don't hammer the API — but if
-            // the previous attempt errored, allow an immediate retry instead of
-            // silently suppressing it for the whole cooldown window.
+            // 1. Debounce
             val sameToken      = trimmedToken == lastToken
             val withinCooldown = now - lastScanTime < scanCooldownMs
             val previousFailed = _scanResult.value is ScanResult.Error
-            if (sameToken && withinCooldown && !previousFailed) {
-                return@launch
-            }
+            if (sameToken && withinCooldown && !previousFailed) return@launch
 
             lastToken = trimmedToken
             lastScanTime = now
 
-            try {
-                val res = api.processCheckin(CheckinRequest(trimmedToken, stationId))
-                val body = res.body()
-                val parsedMsg = parseError(res)
-
-                _scanResult.value = when {
-                    res.isSuccessful -> {
-                        // First-time scan → clear success message.
-                        ScanResult.Success(
-                            "✅ Checked in: ${body?.checkin?.attendeeName ?: "Guest"}"
-                        )
-                    }
-                    res.code() == 409 -> {
-                        // Ticket was scanned before → reused / duplicate ticket.
-                        ScanResult.Duplicate(
-                            "⛔ ${parsedMsg ?: "Already checked in — possible ticket reuse"}"
-                        )
-                    }
-                    res.code() == 410 -> {
-                        ScanResult.Error(
-                            "⚠️ ${parsedMsg ?: "Expired QR pass — ask attendee to refresh code"}"
-                        )
-                    }
-                    res.code() == 404 -> {
-                        ScanResult.Error(
-                            "❌ ${parsedMsg ?: "Invalid QR code"}"
-                        )
-                    }
-                    else -> {
-                        ScanResult.Error(
-                            "❌ ${parsedMsg ?: "Scan failed"}"
-                        )
-                    }
+            // 2. Check cache (prevents duplicate API hits if already known)
+            val cached = dao.getSynced(trimmedToken)
+            if (cached != null) {
+                _scanResult.value = when (cached.status) {
+                    "success" -> ScanResult.Success("✅ Checked in: ${cached.attendeeName ?: "Guest"}")
+                    "duplicate" -> ScanResult.Duplicate("⛔ Already checked in")
+                    "expired" -> ScanResult.Error("⚠️ Expired QR pass")
+                    else -> ScanResult.Error("❌ Invalid QR code")
                 }
-            } catch (e: Exception) {
-                _scanResult.value = ScanResult.Error("❌ Network error during check-in")
+                return@launch
+            }
+
+            // 3. Online -> API, Offline -> Queue
+            if (isOnline.value) {
+                try {
+                    val clientScannedAt = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
+                        timeZone = TimeZone.getTimeZone("UTC")
+                    }.format(Date(now))
+
+                    val res = api.processCheckin(CheckinRequest(trimmedToken, stationId, clientScannedAt))
+                    val body = res.body()
+                    val parsedMsg = parseError(res)
+
+                    val status: String
+                    val attendeeName: String? = body?.checkin?.attendeeName
+
+                    _scanResult.value = when {
+                        res.isSuccessful -> {
+                            status = "success"
+                            if (_isSoundEnabled.value) audioService.playSuccess()
+                            ScanResult.Success("✅ Checked in: ${attendeeName ?: "Guest"}")
+                        }
+                        res.code() == 409 -> {
+                            status = "duplicate"
+                            if (_isSoundEnabled.value) audioService.playDuplicate()
+                            ScanResult.Duplicate("⛔ ${parsedMsg ?: "Already checked in"}")
+                        }
+                        res.code() == 410 -> {
+                            status = "expired"
+                            if (_isSoundEnabled.value) audioService.playError()
+                            ScanResult.Error("⚠️ ${parsedMsg ?: "Expired QR pass"}")
+                        }
+                        else -> {
+                            status = "invalid"
+                            if (_isSoundEnabled.value) audioService.playError()
+                            ScanResult.Error("❌ ${parsedMsg ?: "Scan failed"}")
+                        }
+                    }
+                    // Cache the result
+                    dao.insertSynced(SyncedScanEntity(trimmedToken, attendeeName, status))
+
+                } catch (e: Exception) {
+                    // Fallback to queuing if network error happens mid-request
+                    queueScan(trimmedToken, stationId, now)
+                }
+            } else {
+                queueScan(trimmedToken, stationId, now)
             }
         }
 
+    private suspend fun queueScan(token: String, stationId: String, timestamp: Long) {
+        val isoTime = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
+            timeZone = TimeZone.getTimeZone("UTC")
+        }.format(Date(timestamp))
+
+        dao.insertPending(PendingScanEntity(token, stationId, isoTime))
+        if (_isSoundEnabled.value) audioService.playQueued()
+        _scanResult.value = ScanResult.Queued("📥 Offline — scan queued")
+    }
+
+    private fun syncPendingScans() = viewModelScope.launch {
+        val pending = dao.getPendingScansList()
+        if (pending.isEmpty()) return@launch
+
+        // Web matches 1 scan per batch request
+        for (scan in pending) {
+            try {
+                val res = api.syncBatch(SyncBatchRequest(
+                    stationId = scan.stationId,
+                    scans = listOf(CheckinRequest(scan.token, scan.stationId, scan.clientScannedAt))
+                ))
+                if (res.isSuccessful) {
+                    val result = res.body()?.results?.firstOrNull()
+                    if (result != null) {
+                        dao.insertSynced(SyncedScanEntity(
+                            token = scan.token,
+                            attendeeName = result.checkin?.attendeeName,
+                            status = when (result.status) {
+                                "accepted" -> "success"
+                                "rejected_duplicate" -> "duplicate"
+                                "rejected_expired" -> "expired"
+                                else -> "invalid"
+                            }
+                        ))
+                    }
+                    dao.deletePending(scan)
+                }
+            } catch (_: Exception) {
+                break // Stop batch if connection drops again
+            }
+        }
+    }
+
+    fun clearHistory() = viewModelScope.launch {
+        dao.clearHistory()
+    }
+
     fun clearScanResult() { _scanResult.value = null }
     fun clearSnack()      { _snackMessage.value = null }
+
+    override fun onCleared() {
+        super.onCleared()
+        audioService.release()
+    }
 }

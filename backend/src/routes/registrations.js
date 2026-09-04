@@ -85,11 +85,22 @@ router.get('/:id/qr-token', async (req, res, next) => {
 		const incomingRefreshCount = parseInt(req.query.refresh_count ?? '', 10);
 		const isRefresh = incomingSessionId && !Number.isNaN(incomingRefreshCount);
 
-		const client = await pool.connect();
-		try {
-			await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
+		// Retry loop for SERIALIZABLE isolation failures
+		const MAX_RETRIES = 3;
+		let lastError = null;
+		for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+			const client = await pool.connect();
+			try {
+				await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
 
-			// ── Step 1: Atomic self-invalidation ─────────────────────────────
+				// ── Step 0: Clean up expired tokens ───────────────────────────
+				// Remove any expired tokens so they don't block new token creation
+				await client.query(
+					`DELETE FROM check_in_tokens WHERE registration_id = $1 AND used_at IS NULL AND expires_at < now()`,
+					[id],
+				);
+
+				// ── Step 1: Atomic self-invalidation ─────────────────────────────
 			// If the client is re-opening after a close, it passes the old session_id.
 			// We kill that token here, inside the same transaction, so the SELECT below
 			// will not see it as "active" — no race condition, no 409 on same device.
@@ -170,7 +181,7 @@ router.get('/:id/qr-token', async (req, res, next) => {
 
 			await client.query('COMMIT');
 			const row = result.rows[0];
-			res.json({
+			return res.json({
 				token:               row.token,
 				expires_at:          row.expires_at,
 				session_id:          row.session_id,
@@ -178,11 +189,20 @@ router.get('/:id/qr-token', async (req, res, next) => {
 				refreshes_remaining: MAX_REFRESHES - row.refresh_count,
 			});
 		} catch (error) {
-			await client.query('ROLLBACK').catch(() => {});
-			next(error);
-		} finally {
-			client.release();
+				await client.query('ROLLBACK').catch(() => {});
+				// Retry on SERIALIZABLE isolation failure (PostgreSQL error code 40001)
+				if (error.code === '40001' && attempt < MAX_RETRIES - 1) {
+					lastError = error;
+					continue;
+				}
+				next(error);
+				return;
+			} finally {
+				client.release();
+			}
 		}
+		// If we exhausted all retries, pass the last error to the error handler
+		next(lastError);
 	} catch (error) { next(error); }
 });
 

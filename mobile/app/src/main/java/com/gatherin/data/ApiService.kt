@@ -71,6 +71,9 @@ interface ApiService {
     @POST("checkins")
     suspend fun processCheckin(@Body body: CheckinRequest): Response<CheckinResponse>
 
+    @POST("checkins/sync-batch")
+    suspend fun syncBatch(@Body body: SyncBatchRequest): Response<SyncBatchResponse>
+
     // ── Session (refresh rotation / logout) ───────────────────────────────────
     @POST("auth/refresh")
     suspend fun refreshToken(@Body body: RefreshRequest): Response<RefreshResponse>

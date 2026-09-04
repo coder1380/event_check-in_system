@@ -57,7 +57,24 @@ data class RegisterRequest(
 
 data class CheckinRequest(
     val token: String,
-    @SerializedName("station_id") val stationId: String
+    @SerializedName("station_id") val stationId: String,
+    @SerializedName("client_scanned_at") val clientScannedAt: String? = null
+)
+
+data class SyncBatchRequest(
+    @SerializedName("station_id") val stationId: String,
+    val scans: List<CheckinRequest>
+)
+
+data class SyncBatchResponse(
+    val synced: Int,
+    val results: List<SyncResult>
+)
+
+data class SyncResult(
+    val token: String,
+    val status: String, // "accepted", "rejected_duplicate", "rejected_invalid", "rejected_expired"
+    val checkin: CheckinDetail?
 )
 
 data class AiQueryRequest(val question: String)
