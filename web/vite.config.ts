@@ -7,11 +7,11 @@ export default defineConfig({
   server: {
     proxy: {
       '/api': {
-        target: 'http://localhost:3000/api/v1',
+        target: 'https://event-checkin-backend-production-87a2.up.railway.app/api/v1',
         changeOrigin: true,
       },
       '/socket.io': {
-        target: 'http://localhost:3000/api/v1/',
+        target: 'https://event-checkin-backend-production-87a2.up.railway.app/api/v1/',
         ws: true,
         changeOrigin: true,
       },

@@ -15,7 +15,6 @@ type Registration = { id: string; event_id: string; event_name: string; event_da
 type Dashboard = { event_id: string; capacity: number; registered_count: number; checked_in_count: number; spots_remaining: number; attendees: { registration_id: string; name: string; checked_in_at?: string | null }[] }
 
 const API = import.meta.env.VITE_API_URL || ''
-// const API = 'https://wool-refuse-anthem.ngrok-free.dev'
 console.log("API URL:", import.meta.env.VITE_API_URL);
 const dateLabel = (date: string) => new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }).format(new Date(date))
 const toDateInput = (date: string) => { const value = new Date(date); const offset = value.getTimezoneOffset(); return new Date(value.getTime() - offset * 60000).toISOString().slice(0, 16) }

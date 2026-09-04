@@ -88,7 +88,7 @@ object RetrofitClient {
 
 //    private const val BASE_URL = "https://event-checkin-backend-production-87a2.up.railway.app/api/v1/"
 //    const val DEFAULT_BASE_URL = "https://wool-refuse-anthem.ngrok-free.dev/api/v1/"
-    const val DEFAULT_BASE_URL = "https://wool-refuse-anthem.ngrok-free.dev/api/v1/"
+    const val DEFAULT_BASE_URL = "https://event-checkin-backend-production-87a2.up.railway.app/api/v1/"
 
     fun normalizeBaseUrl(rawUrl: String): String {
         var trimmed = rawUrl.trim()
